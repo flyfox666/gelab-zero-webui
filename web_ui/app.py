@@ -110,7 +110,7 @@ def logs_to_chatbot_messages(logs):
                     
                     with smart_open(target_url, "rb") as f:
                         image = Image.open(f)
-                        image = long_side_resize(image, long_side=300)  # 更小的图片
+                        image = long_side_resize(image, long_side=800)  # 保留较大尺寸以便放大查看
                         img_content = image_to_base64(image)
                 except Exception as e:
                     print(f"[WARNING] 加载图片失败: {e}")
@@ -546,117 +546,156 @@ def create_ui():
     }
     """
     
-    # 灯箱脚本 - 使用head参数注入
+    # 灯箱脚本 - 使用head参数注入 (使用MutationObserver确保动态内容可点击)
     lightbox_head = """
     <style>
-    #image-lightbox {
+    #autoglm-lightbox {
         display: none;
         position: fixed;
-        z-index: 99999;
+        z-index: 999999;
         left: 0;
         top: 0;
         width: 100%;
         height: 100%;
-        background-color: rgba(0,0,0,0.9);
+        background-color: rgba(0,0,0,0.92);
         justify-content: center;
         align-items: center;
         flex-direction: column;
         cursor: zoom-out;
     }
-    #image-lightbox.show {
-        display: flex;
+    #autoglm-lightbox.visible {
+        display: flex !important;
     }
-    #lightbox-img {
+    #autoglm-lightbox-img {
         max-width: 95%;
-        max-height: 85%;
+        max-height: 82%;
         object-fit: contain;
-        border: 2px solid white;
-        border-radius: 8px;
-        box-shadow: 0 0 20px rgba(0,0,0,0.5);
+        border: 3px solid #fff;
+        border-radius: 10px;
+        box-shadow: 0 5px 40px rgba(0,0,0,0.6);
     }
-    #lightbox-controls {
-        margin-top: 20px;
+    #autoglm-lightbox-controls {
+        margin-top: 25px;
         display: flex;
-        gap: 15px;
-        background: rgba(0,0,0,0.5);
-        padding: 10px 20px;
-        border-radius: 30px;
+        gap: 20px;
     }
-    #lightbox-controls button {
-        padding: 8px 20px;
-        font-size: 16px;
+    #autoglm-lightbox-controls button {
+        padding: 12px 28px;
+        font-size: 15px;
         border: none;
-        border-radius: 20px;
+        border-radius: 25px;
         cursor: pointer;
-        font-weight: bold;
-        transition: transform 0.1s;
+        font-weight: 600;
+        transition: all 0.15s ease;
+        box-shadow: 0 2px 8px rgba(0,0,0,0.3);
     }
-    #lightbox-controls button:active { transform: scale(0.95); }
-    #lightbox-download { background: #4CAF50; color: white; }
-    #lightbox-close { background: #f44336; color: white; }
+    #autoglm-lightbox-controls button:hover { transform: scale(1.05); }
+    #autoglm-lightbox-controls button:active { transform: scale(0.98); }
+    #autoglm-lb-download { background: linear-gradient(135deg, #4CAF50, #2E7D32); color: white; }
+    #autoglm-lb-close { background: linear-gradient(135deg, #f44336, #c62828); color: white; }
     
-    /* 强制光标样式方便用户知道可点击 */
-    .trajectory-chatbot img {
+    /* 轨迹图片可点击提示 */
+    .trajectory-chatbot img,
+    [class*="chatbot"] img {
         cursor: zoom-in !important;
+        transition: opacity 0.15s ease;
+    }
+    .trajectory-chatbot img:hover,
+    [class*="chatbot"] img:hover {
+        opacity: 0.85;
     }
     </style>
     <script>
     (function() {
-        console.log("AutoGLM Lightbox Script Loading...");
+        'use strict';
+        console.log('[AutoGLM] Lightbox v2 loading...');
         
-        function initLightbox() {
-            if (document.getElementById('image-lightbox')) return;
-            
-            console.log("Initializing AutoGLM Lightbox...");
-            var lightbox = document.createElement('div');
-            lightbox.id = 'image-lightbox';
-            lightbox.innerHTML = '<img id="lightbox-img" src=""><div id="lightbox-controls"><button id="lightbox-download">📥 下载图片</button><button id="lightbox-close">✕ 关闭</button></div>';
-            document.body.appendChild(lightbox);
-            
-            // 关闭事件
-            lightbox.addEventListener('click', function(e) {
-                if (e.target === lightbox || e.target.id === 'lightbox-close') {
-                    lightbox.classList.remove('show');
-                }
-            });
-            
-            // 下载事件
-            document.getElementById('lightbox-download').addEventListener('click', function(e) {
-                e.stopPropagation();
-                var img = document.getElementById('lightbox-img');
-                if (!img.src) return;
-                var link = document.createElement('a');
-                link.href = img.src;
-                link.download = 'autoglm_screenshot_' + new Date().getTime() + '.jpg';
-                document.body.appendChild(link);
-                link.click();
-                document.body.removeChild(link);
-            });
-        }
-
-        // 立即尝试初始化
-        if (document.body) initLightbox();
-        else window.addEventListener('load', initLightbox);
-
-        // 使用事件委托处理点击
-        document.addEventListener('click', function(e) {
-            // 兼容 Gradio 6.x 的图片点击
-            if (e.target.tagName === 'IMG') {
-                // 检查是否在 Chatbot 中
-                let isChatbotImg = e.target.closest('.trajectory-chatbot') || 
-                                  e.target.closest('.gr-chatbot') ||
-                                  e.target.parentElement.classList.contains('message');
-                
-                if (isChatbotImg) {
-                    initLightbox(); // 确保已初始化
-                    var lightbox = document.getElementById('image-lightbox');
-                    var lbImg = document.getElementById('lightbox-img');
-                    lbImg.src = e.target.src;
-                    lightbox.classList.add('show');
-                    console.log("Lightbox opened for image:", e.target.src.substring(0, 50) + "...");
-                }
+        var lightboxEl = null;
+        var lightboxImg = null;
+        
+        function createLightbox() {
+            if (document.getElementById('autoglm-lightbox')) {
+                lightboxEl = document.getElementById('autoglm-lightbox');
+                lightboxImg = document.getElementById('autoglm-lightbox-img');
+                return;
             }
-        }, true); // 使用捕获阶段确保拦截
+            
+            lightboxEl = document.createElement('div');
+            lightboxEl.id = 'autoglm-lightbox';
+            lightboxEl.innerHTML = '<img id="autoglm-lightbox-img" src="" alt=""><div id="autoglm-lightbox-controls"><button id="autoglm-lb-download">📥 下载图片</button><button id="autoglm-lb-close">✕ 关闭</button></div>';
+            document.body.appendChild(lightboxEl);
+            
+            lightboxImg = document.getElementById('autoglm-lightbox-img');
+            
+            // 关闭逻辑
+            lightboxEl.addEventListener('click', function(e) {
+                if (e.target === lightboxEl || e.target.id === 'autoglm-lb-close') {
+                    lightboxEl.classList.remove('visible');
+                }
+            });
+            
+            // ESC键关闭
+            document.addEventListener('keydown', function(e) {
+                if (e.key === 'Escape' && lightboxEl.classList.contains('visible')) {
+                    lightboxEl.classList.remove('visible');
+                }
+            });
+            
+            // 下载逻辑
+            document.getElementById('autoglm-lb-download').addEventListener('click', function(e) {
+                e.stopPropagation();
+                if (!lightboxImg.src || lightboxImg.src === window.location.href) return;
+                
+                var a = document.createElement('a');
+                a.href = lightboxImg.src;
+                a.download = 'autoglm_' + new Date().getTime() + '.png';
+                a.style.display = 'none';
+                document.body.appendChild(a);
+                a.click();
+                setTimeout(function() { document.body.removeChild(a); }, 100);
+            });
+            
+            console.log('[AutoGLM] Lightbox created successfully');
+        }
+        
+        function openLightbox(imgSrc) {
+            createLightbox();
+            lightboxImg.src = imgSrc;
+            lightboxEl.classList.add('visible');
+            console.log('[AutoGLM] Lightbox opened:', imgSrc.substring(0, 60));
+        }
+        
+        function isChatbotImage(el) {
+            if (!el || el.tagName !== 'IMG') return false;
+            // 检查多种可能的父容器类名
+            var parent = el.closest('.trajectory-chatbot') || 
+                         el.closest('[class*="chatbot"]') ||
+                         el.closest('.message') ||
+                         el.closest('[data-testid="bot"]') ||
+                         el.closest('[data-testid="user"]');
+            return !!parent;
+        }
+        
+        // 核心：使用捕获阶段拦截所有图片点击
+        document.addEventListener('click', function(e) {
+            var target = e.target;
+            
+            // 如果点击的是图片且在Chatbot中
+            if (isChatbotImage(target)) {
+                e.preventDefault();
+                e.stopPropagation();
+                openLightbox(target.src);
+            }
+        }, true); // capture phase
+        
+        // 初始化
+        if (document.readyState === 'loading') {
+            document.addEventListener('DOMContentLoaded', createLightbox);
+        } else {
+            createLightbox();
+        }
+        
+        console.log('[AutoGLM] Lightbox v2 event listeners attached');
     })();
     </script>
     """
@@ -666,7 +705,7 @@ def create_ui():
         gr.Markdown("## 🤖 Open-AutoGLM 控制台")
 
         with gr.Row():
-            # --- 左列：设备管理、配置与命令 ---
+            # --- 左列：设备管理、配置、任务监控 ---
             with gr.Column(scale=1, min_width=350):
                 
                 # 1. 设备管理
@@ -696,9 +735,36 @@ def create_ui():
                         enable_tcpip_btn = gr.Button("📡 启用TCP/IP模式", size="sm")
                         wireless_status = gr.Textbox(label="状态", interactive=False, lines=1)
 
-                # 2. 参数配置
+                # 2. 任务监控（放在设备管理下面）
                 with gr.Group():
-                    gr.Markdown("### ⚙️ 参数配置")
+                    gr.Markdown("### 📊 任务监控")
+                    with gr.Row():
+                        session_dropdown = gr.Dropdown(
+                            label="Session",
+                            choices=[],
+                            value=None,
+                            scale=4,
+                            allow_custom_value=True
+                        )
+                        refresh_sessions_btn = gr.Button("🔄", scale=1)
+                    
+                    task_status = gr.Textbox(
+                        label="任务状态",
+                        value="⚪ 就绪",
+                        interactive=False,
+                        lines=1
+                    )
+                    user_input = gr.Textbox(
+                        label="命令/回复",
+                        placeholder="输入任务指令 或 回复Agent询问...",
+                        lines=2
+                    )
+                    with gr.Row():
+                        submit_btn = gr.Button("▶ 执行/回复", variant="primary", scale=2)
+                        stop_btn = gr.Button("⏹ 停止", variant="stop", scale=1)
+
+                # 3. 参数配置
+                with gr.Accordion("⚙️ 参数配置", open=False):
                     with gr.Tabs() as config_tabs:
                         with gr.TabItem("智谱AI"):
                             api_key = gr.Textbox(label="API Key", type="password", value=os.environ.get("PHONE_AGENT_API_KEY", ""))
@@ -719,7 +785,7 @@ def create_ui():
                         device_dd = gr.Dropdown(label="当前设备", choices=[], value=None, scale=3)
                         refresh_dev_btn = gr.Button("🔄", scale=1)
 
-                # 3. 实用工具
+                # 4. 实用工具
                 with gr.Accordion("🛠 实用工具", open=False):
                     scrcpy_btn = gr.Button("🖥️ 启动屏幕镜像", variant="secondary")
                     scrcpy_status = gr.Textbox(label="状态", interactive=False, lines=1)
@@ -727,60 +793,30 @@ def create_ui():
                     list_apps_btn = gr.Button("📲 获取应用列表", size="sm")
                     app_list_output = gr.Textbox(label="应用列表", lines=3, interactive=False)
 
-            # --- 右列：日志、命令、轨迹 ---
+            # --- 右列：日志与轨迹并排（更大空间） ---
             with gr.Column(scale=3, min_width=700):
-                gr.Markdown("### 📊 任务监控")
-                
                 with gr.Row():
-                    session_dropdown = gr.Dropdown(
-                        label="Session",
-                        choices=[],
-                        value=None,
-                        scale=4,
-                        allow_custom_value=True
-                    )
-                    refresh_sessions_btn = gr.Button("🔄", scale=1)
-                
-                # 日志和轨迹并排显示
-                with gr.Row():
-                    # 左边：实时日志 + 命令输入
+                    # 左边：实时日志
                     with gr.Column(scale=1):
-                        gr.Markdown("#### 📋 实时日志")
+                        gr.Markdown("### 📋 实时日志")
                         log_output = gr.Textbox(
                             label="终端输出",
                             value="",
-                            lines=15,
-                            max_lines=20,
+                            lines=25,
+                            max_lines=30,
                             interactive=False,
                             elem_id="log-window"
                         )
                         with gr.Row():
                             clear_log_btn = gr.Button("🗑 清空", size="sm")
                             copy_log_btn = gr.Button("📋 复制", size="sm")
-                        
-                        # 命令输入区
-                        gr.Markdown("#### 🎯 命令/回复")
-                        task_status = gr.Textbox(
-                            label="任务状态",
-                            value="⚪ 就绪",
-                            interactive=False,
-                            lines=1
-                        )
-                        user_input = gr.Textbox(
-                            label="输入",
-                            placeholder="新任务 或 回复Agent询问...",
-                            lines=2
-                        )
-                        with gr.Row():
-                            submit_btn = gr.Button("▶ 执行/回复", variant="primary", scale=2)
-                            stop_btn = gr.Button("⏹ 停止", variant="stop", scale=1)
                     
                     # 右边：任务轨迹
                     with gr.Column(scale=1):
-                        gr.Markdown("#### 📱 任务轨迹")
+                        gr.Markdown("### 📱 任务轨迹")
                         trajectory_output = gr.Chatbot(
                             label="轨迹回放",
-                            height=600,
+                            height=700,
                             show_label=False,
                             elem_classes=["trajectory-chatbot"]
                         )
