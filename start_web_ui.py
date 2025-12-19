@@ -5,6 +5,7 @@
 
 import os
 import sys
+import subprocess
 
 def check_dependencies():
     """检查依赖是否安装"""
@@ -34,7 +35,6 @@ def main():
     # 检查ADB
     print("检查ADB连接...")
     try:
-        import subprocess
         result = subprocess.run(["adb", "version"], capture_output=True, text=True, timeout=5)
         if result.returncode == 0:
             print("OK - ADB已安装")
@@ -81,41 +81,10 @@ def main():
     except Exception as e:
         print(f"清理端口时出错: {e}")
 
-    except Exception as e:
-        print(f"清理端口时出错: {e}")
-
-    # --- 启动 Streamlit 可视化服务 ---
-    streamlit_port = 8501
-    streamlit_process = None
-    try:
-        print(f"\n正在启动可视化服务 (端口 {streamlit_port})...")
-        # 构造 streamlit 命令
-        # streamlit run --server.address 0.0.0.0 visualization/main_page.py --server.port 8501
-        viz_script = os.path.join(os.path.dirname(os.path.abspath(__file__)), "visualization", "main_page.py")
-        cmd_streamlit = [
-            sys.executable, "-m", "streamlit", "run",
-            "--server.address", "0.0.0.0",
-            "--server.port", str(streamlit_port),
-            "--server.headless", "true",  # 不自动打开浏览器
-            viz_script
-        ]
-        
-        streamlit_process = subprocess.Popen(
-            cmd_streamlit,
-            stdout=subprocess.DEVNULL, # 隐藏输出，避免干扰
-            stderr=subprocess.PIPE     # 捕获错误
-        )
-        print(f"可视化服务已在后台启动: http://localhost:{streamlit_port}")
-        
-    except Exception as e:
-        print(f"WARNING - 启动可视化服务失败: {e}")
-
     try:
         from app import create_ui
-        # 传递 streamlit url 给 UI (如果 app.py 支持接收参数，或者通过环境变量)
-        os.environ["STREAMLIT_URL"] = f"http://localhost:{streamlit_port}"
         
-        demo = create_ui()
+        demo, css, head = create_ui()
         
         print(f"访问地址: http://localhost:{target_port}")
         demo.launch(
@@ -124,17 +93,13 @@ def main():
             share=False,
             inbrowser=True,
             show_error=True,
-            quiet=False
+            quiet=False,
+            css=css,
+            head=head
         )
     except Exception as e:
         print(f"ERROR - 启动失败: {e}")
         print("请确保已安装所有依赖：pip install -r requirements.txt")
-    finally:
-        # 清理 Streamlit 进程
-        if streamlit_process:
-            print("正在关闭可视化服务...")
-            streamlit_process.terminate()
-            streamlit_process.wait()
         sys.exit(1)
 
 if __name__ == "__main__":

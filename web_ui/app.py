@@ -1,6 +1,7 @@
 """
 Gradio Web UI for AutoGLM
 提供用户友好的Web界面来使用AutoGLM进行Android设备自动化操作
+集成轨迹可视化功能
 """
 
 import gradio as gr
@@ -11,6 +12,151 @@ import time
 import os
 import sys
 import datetime
+import json
+import re
+import glob
+
+from PIL import Image
+from io import BytesIO
+import base64
+
+# 确保能找到项目模块
+if "." not in sys.path:
+    sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+try:
+    import jsonlines
+    from megfile import smart_open, smart_exists
+    HAS_MEGFILE = True
+except ImportError:
+    HAS_MEGFILE = False
+    print("[WARNING] megfile/jsonlines not installed, visualization may be limited")
+
+# --- 轨迹可视化工具函数 ---
+
+def long_side_resize(image, long_side=600):
+    """将图片长边限制到指定尺寸"""
+    image = image.convert("RGB")
+    width, height = image.size
+    if max(width, height) > long_side:
+        if width >= height:
+            new_width = long_side
+            new_height = int(height * long_side / width)
+        else:
+            new_height = long_side
+            new_width = int(width * long_side / height)
+        image = image.resize((new_width, new_height), Image.Resampling.LANCZOS)
+    return image
+
+def image_to_base64(image):
+    """将PIL图片转换为base64 URL"""
+    buffered = BytesIO()
+    image.save(buffered, format="JPEG", quality=85)
+    img_str = base64.b64encode(buffered.getvalue()).decode()
+    return f"data:image/jpeg;base64,{img_str}"
+
+def load_session_logs(session_id):
+    """加载指定session的日志"""
+    if not HAS_MEGFILE or not session_id:
+        return []
+    
+    log_file = f"running_log/server_log/os-copilot-local-eval-logs/traces/{session_id}.jsonl"
+    
+    if not smart_exists(log_file):
+        return []
+    
+    try:
+        with smart_open(log_file, "r", encoding='utf-8') as f:
+            reader = jsonlines.Reader(f)
+            logs = [log for log in reader]
+        return logs
+    except Exception as e:
+        print(f"[ERROR] 加载日志失败: {e}")
+        return []
+
+def logs_to_chatbot_messages(logs):
+    """将日志转换为Gradio Chatbot格式的消息列表 (Gradio 6.x messages格式)"""
+    if not logs:
+        return []
+    
+    messages = []
+    
+    # 第一条是配置信息
+    config_log = logs[0]
+    task = config_log.get('message', {}).get('task', '未知任务')
+    model_name = config_log.get('message', {}).get('model_config', {}).get('model_name', '未知模型')
+    
+    # Gradio 6.x 使用 {"role": "user"|"assistant", "content": "..."} 格式
+    messages.append({"role": "assistant", "content": f"### 📋 任务: {task}\n\n**模型**: {model_name}"})
+    
+    # 后续是环境-动作对
+    env_act_logs = logs[1:]
+    for idx, log in enumerate(env_act_logs):
+        try:
+            env = log.get('message', {}).get('environment', {})
+            act = log.get('message', {}).get('action', {})
+            
+            image_url = env.get('image', '')
+            thought = act.get('cot', '')
+            action_type = act.get('action_type', '')
+            
+            # 尝试加载截图
+            img_content = None
+            if image_url and HAS_MEGFILE:
+                try:
+                    # 优先尝试处理过的图片
+                    processed_url = image_url.replace(".jpeg", "_processed.jpeg")
+                    target_url = processed_url if smart_exists(processed_url) else image_url
+                    
+                    with smart_open(target_url, "rb") as f:
+                        image = Image.open(f)
+                        image = long_side_resize(image, long_side=300)  # 更小的图片
+                        img_content = image_to_base64(image)
+                except Exception as e:
+                    print(f"[WARNING] 加载图片失败: {e}")
+            
+            # 用户消息显示步骤编号 + 截图
+            if img_content:
+                # Gradio 6.x 支持 gr.Image 或 HTML 格式显示图片
+                messages.append({"role": "user", "content": f"📱 Step {idx + 1}\n\n![screenshot]({img_content})"})
+            else:
+                messages.append({"role": "user", "content": f"📱 Step {idx + 1}"})
+            
+            # 构建动作描述
+            action_desc = f"**Step {idx + 1}**\n\n"
+            if thought:
+                action_desc += f"💭 **思考**: {thought}\n\n"
+            action_desc += f"🎯 **动作**: `{action_type}`\n\n"
+            
+            # 添加动作详情
+            action_copy = {k: v for k, v in act.items() if k not in ['cot']}
+            action_desc += f"```json\n{json.dumps(action_copy, indent=2, ensure_ascii=False)}\n```"
+            
+            # 助手回复动作详情
+            messages.append({"role": "assistant", "content": action_desc})
+            
+        except Exception as e:
+            print(f"[WARNING] 处理日志条目失败: {e}")
+            continue
+    
+    return messages
+
+def get_available_sessions():
+    """获取所有可用的session ID列表"""
+    traces_dir = "running_log/server_log/os-copilot-local-eval-logs/traces"
+    if not os.path.exists(traces_dir):
+        return []
+    
+    sessions = []
+    for f in glob.glob(os.path.join(traces_dir, "*.jsonl")):
+        session_id = os.path.basename(f).replace(".jsonl", "")
+        # 获取文件修改时间
+        mtime = os.path.getmtime(f)
+        sessions.append((session_id, mtime))
+    
+    # 按时间倒序排列（最新的在前）
+    sessions.sort(key=lambda x: x[1], reverse=True)
+    return [s[0] for s in sessions[:20]]  # 只返回最近20个
 
 # --- 全局命令执行管理器 ---
 class CommandRunner:
@@ -19,23 +165,23 @@ class CommandRunner:
         self.logs = ""
         self.is_running = False
         self.log_lock = threading.Lock()
+        self.current_session_id = None  # 追踪当前session ID
+        self.waiting_for_input = False  # 是否等待用户输入
         
     def start(self, cmd_args, cwd=None, env=None):
         """启动新命令"""
         if self.is_running:
             return False, "当前已有任务在运行，请先停止"
             
-        self.stop() # 确保清理
+        self.stop()
         
-        # 重置状态
         with self.log_lock:
-            # 清空旧日志，开始新日志
             self.logs = f"--- 任务开始: {' '.join(cmd_args)} ---\n"
+            self.current_session_id = None  # 重置session ID
             print(f"\n[WebUI] 启动任务: {' '.join(cmd_args)}")
 
         self.is_running = True
         
-        # 启动后台线程
         thread = threading.Thread(target=self._run_thread, args=(cmd_args, cwd, env), daemon=True)
         thread.start()
         return True, "任务已启动"
@@ -52,7 +198,7 @@ class CommandRunner:
                 self._append_log(f"\n[系统] 停止进程失败: {e}\n")
         
         self.is_running = False
-        return "任务停止指令已发送"
+        return True, "任务停止指令已发送"
 
     def _run_thread(self, cmd_args, cwd, env):
         try:
@@ -60,22 +206,32 @@ class CommandRunner:
                 cmd_args,
                 cwd=cwd,
                 env=env,
+                stdin=subprocess.PIPE,  # 添加stdin支持
                 stdout=subprocess.PIPE,
                 stderr=subprocess.STDOUT,
                 text=True,
                 encoding='utf-8',
                 errors='replace',
-                bufsize=1,  # 行缓冲
+                bufsize=1,
                 universal_newlines=True
             )
             
-            # 实时读取输出
             for line in iter(self.process.stdout.readline, ''):
                 if line:
-                    # 1. 写入 Web UI 日志
                     self._append_log(line)
-                    # 2. 同步打印到后台终端 (end="" 因为 line 自带换行)
                     print(line, end="", flush=True)
+                    
+                    # 解析 Session ID
+                    match = re.search(r'Session ID:\s*([a-f0-9\-]+)', line)
+                    if match:
+                        with self.log_lock:
+                            self.current_session_id = match.group(1)
+                        print(f"[WebUI] 捕获到 Session ID: {self.current_session_id}")
+                    
+                    # 检测是否需要用户输入
+                    if 'Please Reply:' in line or '回复一下' in line:
+                        with self.log_lock:
+                            self.waiting_for_input = True
             
             self.process.wait()
             end_msg = f"\n--- 任务结束 (代码: {self.process.returncode}) ---\n"
@@ -88,13 +244,27 @@ class CommandRunner:
             print(err_msg)
         finally:
             self.is_running = False
+            self.waiting_for_input = False
             self.process = None
+
+    def send_input(self, text):
+        """发送输入到进程的stdin"""
+        if self.process and self.process.poll() is None and self.process.stdin:
+            try:
+                self.process.stdin.write(text + "\n")
+                self.process.stdin.flush()
+                self._append_log(f"\n[用户回复] {text}\n")
+                with self.log_lock:
+                    self.waiting_for_input = False
+                return True, "已发送回复"
+            except Exception as e:
+                return False, f"发送失败: {e}"
+        return False, "没有正在运行的任务"
 
     def _append_log(self, text):
         with self.log_lock:
-            # 日志保留策略
-            if len(self.logs) > 1000000:
-                self.logs = self.logs[-800000:]
+            if len(self.logs) > 500000:
+                self.logs = self.logs[-400000:]
             self.logs += text
 
     def get_logs(self):
@@ -102,7 +272,17 @@ class CommandRunner:
             return self.logs
 
     def get_status(self):
+        if self.waiting_for_input:
+            return "🟡 等待输入"
         return "🟢 运行中" if self.is_running else "⚪ 就绪"
+    
+    def get_current_session_id(self):
+        with self.log_lock:
+            return self.current_session_id
+    
+    def is_waiting_for_input(self):
+        with self.log_lock:
+            return self.waiting_for_input
 
 # 全局单例
 runner = CommandRunner()
@@ -110,34 +290,25 @@ runner = CommandRunner()
 # --- 辅助函数 ---
 
 def get_adb_devices():
-    """获取所有已连接的设备（包括USB和无线）"""
+    """获取所有已连接的设备"""
     try:
         result = subprocess.run(["adb", "devices"], capture_output=True, text=True, encoding='utf-8', errors='ignore')
         devices = []
         device_details = []
 
         if result.returncode == 0:
-            lines = result.stdout.split('\n')[1:]  # 跳过标题行
+            lines = result.stdout.split('\n')[1:]
             for line in lines:
                 if '\tdevice' in line:
                     device_id = line.split('\t')[0]
                     devices.append(device_id)
-                    # 判断是USB还是无线连接
-                    if ':' in device_id:
-                        # 无线设备（IP:端口格式）
-                        device_type = "📶 无线"
-                    else:
-                        # USB设备
-                        device_type = "🔌 USB"
+                    device_type = "📶 无线" if ':' in device_id else "🔌 USB"
                     device_details.append(f"{device_type}: {device_id}")
 
         if not device_details:
             return ["未找到设备"], ""
 
-        # 格式化设备列表
         device_list = "\n".join(device_details)
-        all_devices = ", ".join(devices)
-
         return devices, f"已连接设备 ({len(devices)}个):\n\n{device_list}\n\n默认设备: {devices[0]}"
     except Exception as e:
         return [f"错误: {str(e)}"], f"获取设备列表失败: {str(e)}"
@@ -145,127 +316,62 @@ def get_adb_devices():
 def connect_wireless_device(ip_address, port="5555"):
     """连接无线设备"""
     try:
-        # 验证IP地址格式
         parts = ip_address.strip().split('.')
-        if len(parts) != 4 or not all(0 <= int(p) <= 255 for p in parts if p.isdigit()):
+        if len(parts) != 4:
             return False, "无效的IP地址格式"
 
-        # 构造连接地址
         connect_addr = f"{ip_address}:{port}"
-
-        # 执行连接命令
         result = subprocess.run(
             ["adb", "connect", connect_addr],
-            capture_output=True,
-            text=True,
-            encoding='utf-8',
-            errors='ignore',
-            timeout=10
+            capture_output=True, text=True, encoding='utf-8', errors='ignore', timeout=10
         )
 
         if result.returncode == 0:
-            # 验证是否真正连接成功
-            devices_result = subprocess.run(
-                ["adb", "devices"],
-                capture_output=True,
-                text=True,
-                encoding='utf-8',
-                errors='ignore'
-            )
-
+            devices_result = subprocess.run(["adb", "devices"], capture_output=True, text=True, encoding='utf-8')
             if connect_addr in devices_result.stdout and "device" in devices_result.stdout:
                 return True, f"成功连接到无线设备: {connect_addr}"
             else:
-                return False, f"连接失败，请检查:\n1. 手机是否开启无线调试\n2. IP地址是否正确\n3. 手机和电脑是否在同一网络"
+                return False, "连接失败，请检查设备设置"
         else:
-            error_msg = result.stderr.strip() if result.stderr else result.stdout.strip()
-            return False, f"连接失败: {error_msg}"
+            return False, f"连接失败: {result.stderr.strip() if result.stderr else result.stdout.strip()}"
 
     except subprocess.TimeoutExpired:
-        return False, "连接超时，请检查网络连接"
+        return False, "连接超时"
     except Exception as e:
         return False, f"连接出错: {str(e)}"
 
 def disconnect_wireless_device(device_id):
     """断开无线设备"""
     try:
-        # 如果设备ID包含端口，直接使用；否则尝试断开所有无线连接
-        if ':' in device_id:
-            # 断开特定设备
-            result = subprocess.run(
-                ["adb", "disconnect", device_id],
-                capture_output=True,
-                text=True,
-                encoding='utf-8',
-                errors='ignore'
-            )
-        else:
-            # 断开所有无线连接
-            result = subprocess.run(
-                ["adb", "disconnect"],
-                capture_output=True,
-                text=True,
-                encoding='utf-8',
-                errors='ignore'
-            )
-
-        if result.returncode == 0:
-            return True, "已断开无线设备连接"
-        else:
-            return False, "断开连接失败"
-
+        result = subprocess.run(
+            ["adb", "disconnect"] if not device_id else ["adb", "disconnect", device_id],
+            capture_output=True, text=True, encoding='utf-8'
+        )
+        return True, "已断开无线设备连接"
     except Exception as e:
         return False, f"断开连接出错: {str(e)}"
 
 def enable_tcpip(device_id, port="5555"):
-    """在USB连接的设备上启用TCP/IP模式（用于无线调试）"""
+    """启用TCP/IP模式"""
     try:
-        # 确保设备是USB连接且在线
-        devices_result = subprocess.run(
-            ["adb", "devices"],
-            capture_output=True,
-            text=True,
-            encoding='utf-8',
-            errors='ignore'
-        )
-
-        if device_id not in devices_result.stdout:
-            return False, f"设备 {device_id} 未连接"
-
-        # 启用TCP/IP
         result = subprocess.run(
-            ["adb", "-t", "tcpip", str(port)],
-            capture_output=True,
-            text=True,
-            encoding='utf-8',
-            errors='ignore',
-            timeout=10
+            ["adb", "-s", device_id, "tcpip", str(port)],
+            capture_output=True, text=True, encoding='utf-8', timeout=10
         )
-
         if result.returncode == 0:
-            # 尝试获取设备IP
             ip_result = subprocess.run(
-                ["adb", "shell", "ip", "route", "get", "8.8.8.8"],
-                capture_output=True,
-                text=True,
-                encoding='utf-8',
-                errors='ignore'
+                ["adb", "-s", device_id, "shell", "ip", "route", "get", "8.8.8.8"],
+                capture_output=True, text=True, encoding='utf-8'
             )
-
             device_ip = "未知"
-            if ip_result.returncode == 0:
-                for line in ip_result.stdout.split('\n'):
-                    if "src" in line:
-                        parts = line.split()
-                        for i, part in enumerate(parts):
-                            if part == "src" and i + 1 < len(parts):
-                                device_ip = parts[i + 1]
-                                break
-
-            return True, f"TCP/IP已启用在端口 {port}\n设备IP地址: {device_ip}\n现在可以使用无线连接了"
-        else:
-            return False, f"启用TCP/IP失败: {result.stderr}"
-
+            if ip_result.returncode == 0 and "src" in ip_result.stdout:
+                parts = ip_result.stdout.split()
+                for i, part in enumerate(parts):
+                    if part == "src" and i + 1 < len(parts):
+                        device_ip = parts[i + 1]
+                        break
+            return True, f"TCP/IP已启用\n设备IP: {device_ip}"
+        return False, f"启用失败: {result.stderr}"
     except Exception as e:
         return False, f"启用TCP/IP出错: {str(e)}"
 
@@ -273,10 +379,7 @@ def get_available_apps():
     try:
         result = subprocess.run(
             ["adb", "shell", "pm", "list", "packages", "-3"],
-            capture_output=True,
-            text=True,
-            encoding='utf-8',
-            errors='ignore'
+            capture_output=True, text=True, encoding='utf-8', errors='ignore'
         )
         if result.returncode != 0:
             return "获取失败"
@@ -286,183 +389,285 @@ def get_available_apps():
     except Exception as e:
         return str(e)
 
-# --- Scrcpy 启动器 ---
 def start_scrcpy():
     """启动 scrcpy 屏幕镜像"""
     try:
-        # scrcpy 可执行文件路径
         current_dir = os.path.dirname(os.path.abspath(__file__))
         project_dir = os.path.dirname(current_dir)
         scrcpy_path = os.path.join(project_dir, "scrcpy-win64-v3.3.3", "scrcpy.exe")
 
-        # 调试信息
-        print(f"[DEBUG] 项目目录: {project_dir}")
-        print(f"[DEBUG] scrcpy 路径: {scrcpy_path}")
-        print(f"[DEBUG] 文件存在: {os.path.exists(scrcpy_path)}")
-
         if not os.path.exists(scrcpy_path):
-            return False, f"未找到 scrcpy.exe: {scrcpy_path}"
+            return f"未找到 scrcpy.exe: {scrcpy_path}"
 
-        # 检查是否有设备连接
         result = subprocess.run(["adb", "devices"], capture_output=True, text=True, encoding='utf-8')
-        devices = []
-        for line in result.stdout.split('\n')[1:]:
-            if '\tdevice' in line:
-                device_id = line.split('\t')[0]
-                # 判断是USB还是无线设备
-                if ':' in device_id:
-                    device_type = "无线"
-                else:
-                    device_type = "USB"
-                devices.append(f"{device_type}: {device_id}")
+        devices = [line.split('\t')[0] for line in result.stdout.split('\n')[1:] if '\tdevice' in line]
 
         if not devices:
-            return False, "没有检测到已连接的设备，请先连接设备"
+            return "没有检测到已连接的设备"
 
-        # 准备启动命令
         scrcpy_cmd = [scrcpy_path]
-
-        # 如果有多个设备，使用第一个
         if len(devices) > 1:
-            first_device = devices[0].split(': ')[1]
-            # 尝试指定设备
-            scrcpy_cmd.extend(['-s', first_device])
-            device_info = f"使用第一个设备 ({first_device})"
-        else:
-            device_info = devices[0]
+            scrcpy_cmd.extend(['-s', devices[0]])
 
-        # 启动 scrcpy
         def run_scrcpy():
             try:
-                print(f"[INFO] 启动 scrcpy: {' '.join(scrcpy_cmd)}")
-                # Windows 下在新控制台窗口中启动
                 if os.name == 'nt':
-                    subprocess.Popen(scrcpy_cmd,
-                                   creationflags=subprocess.CREATE_NEW_CONSOLE)
+                    subprocess.Popen(scrcpy_cmd, creationflags=subprocess.CREATE_NEW_CONSOLE)
                 else:
                     subprocess.Popen(scrcpy_cmd)
-                print(f"[INFO] scrcpy 启动成功")
             except Exception as e:
                 print(f"[ERROR] 启动 scrcpy 失败: {e}")
 
-        # 在新线程中启动，避免阻塞 UI
-        thread = threading.Thread(target=run_scrcpy, daemon=True)
-        thread.start()
-
-        # 等待一下让进程启动
+        threading.Thread(target=run_scrcpy, daemon=True).start()
         time.sleep(0.5)
-
-        return True, f"✅ scrcpy 已启动\n{device_info}"
+        return f"✅ scrcpy 已启动 (设备: {devices[0]})"
 
     except Exception as e:
-        print(f"[ERROR] start_scrcpy 异常: {e}")
-        return False, f"启动 scrcpy 失败: {str(e)}"
+        return f"启动失败: {str(e)}"
 
 def check_adb_connection():
-    """检查ADB连接状态和设备列表"""
+    """检查ADB连接状态"""
     try:
-        # 检查ADB服务器状态
-        result = subprocess.run(["adb", "start-server"],
-                              capture_output=True, text=True, timeout=5)
-
-        # 获取设备列表
-        result = subprocess.run(["adb", "devices"],
-                              capture_output=True, text=True, timeout=5)
+        subprocess.run(["adb", "start-server"], capture_output=True, text=True, timeout=5)
+        result = subprocess.run(["adb", "devices"], capture_output=True, text=True, timeout=5)
 
         if result.returncode == 0:
             lines = result.stdout.strip().split('\n')
             devices = []
-
-            for line in lines[1:]:  # 跳过第一行标题
+            for line in lines[1:]:
                 if line.strip():
                     parts = line.split('\t')
                     if len(parts) >= 2:
-                        device_id = parts[0].strip()
-                        status = parts[1].strip()
-                        devices.append(f"📱 {device_id} - {status}")
+                        devices.append(f"📱 {parts[0]} - {parts[1]}")
 
             if devices:
-                device_info = "\n".join(devices)
-                return True, f"✅ ADB服务正常\n已连接设备:\n{device_info}"
+                return True, f"✅ ADB服务正常\n已连接设备:\n" + "\n".join(devices)
             else:
-                return False, "⚠️ ADB服务正常但无设备连接\n请检查:\n- 手机是否开启USB调试\n- 数据线是否连接正常\n- 是否已授权此电脑"
-        else:
-            return False, f"❌ ADB命令执行失败\n错误信息: {result.stderr}"
+                return False, "⚠️ ADB服务正常但无设备连接"
+        return False, f"❌ ADB命令执行失败"
 
     except FileNotFoundError:
-        return False, "❌ ADB未安装或未添加到PATH\n请安装Android Platform Tools"
+        return False, "❌ ADB未安装或未添加到PATH"
     except subprocess.TimeoutExpired:
-        return False, "❌ ADB命令超时\n请尝试重启ADB服务"
+        return False, "❌ ADB命令超时"
     except Exception as e:
         return False, f"❌ 检查ADB连接时出错: {str(e)}"
 
 def restart_adb():
     """重启ADB服务"""
     try:
-        # 执行 adb kill-server
-        result_kill = subprocess.run(["adb", "kill-server"],
-                                   capture_output=True, text=True, timeout=10)
-
-        # 等待1秒确保服务完全停止
-        import time
+        subprocess.run(["adb", "kill-server"], capture_output=True, text=True, timeout=10)
         time.sleep(1)
-
-        # 执行 adb start-server
-        result_start = subprocess.run(["adb", "start-server"],
-                                    capture_output=True, text=True, timeout=10)
-
-        if result_kill.returncode == 0 and result_start.returncode == 0:
-            # 再次检查设备列表
-            result_devices = subprocess.run(["adb", "devices"],
-                                          capture_output=True, text=True, timeout=5)
-
-            if result_devices.returncode == 0:
-                lines = result_devices.stdout.strip().split('\n')
-                devices = []
-
-                for line in lines[1:]:  # 跳过第一行标题
-                    if line.strip():
-                        parts = line.split('\t')
-                        if len(parts) >= 2:
-                            device_id = parts[0].strip()
-                            status = parts[1].strip()
-                            devices.append(f"📱 {device_id} - {status}")
-
-                if devices:
-                    device_info = "\n".join(devices)
-                    return True, f"✅ ADB服务重启成功\n\n当前连接设备:\n{device_info}"
-                else:
-                    return True, "✅ ADB服务重启成功\n\n当前无设备连接\n请连接设备并开启USB调试"
-            else:
-                return True, "✅ ADB服务重启成功\n\n注意：无法获取设备列表"
-        else:
-            error_msg = ""
-            if result_kill.returncode != 0:
-                error_msg += f"停止ADB失败: {result_kill.stderr}\n"
-            if result_start.returncode != 0:
-                error_msg += f"启动ADB失败: {result_start.stderr}"
-            return False, f"❌ ADB重启失败\n{error_msg}"
-
-    except FileNotFoundError:
-        return False, "❌ ADB未安装或未添加到PATH\n请安装Android Platform Tools"
-    except subprocess.TimeoutExpired:
-        return False, "❌ ADB命令超时\n请手动执行:\nadb kill-server\nadb start-server"
+        subprocess.run(["adb", "start-server"], capture_output=True, text=True, timeout=10)
+        
+        result = subprocess.run(["adb", "devices"], capture_output=True, text=True, timeout=5)
+        if result.returncode == 0:
+            lines = result.stdout.strip().split('\n')
+            devices = [f"📱 {line.split()[0]}" for line in lines[1:] if '\tdevice' in line]
+            if devices:
+                return True, f"✅ ADB重启成功\n当前设备:\n" + "\n".join(devices)
+            return True, "✅ ADB重启成功\n当前无设备连接"
+        return False, "❌ ADB重启失败"
     except Exception as e:
-        return False, f"❌ 重启ADB时出错: {str(e)}"
+        return False, f"❌ 重启出错: {str(e)}"
 
 # --- Gradio 界面 ---
 
 def create_ui():
+    # 自定义CSS：限制轨迹图片大小 + 灯箱效果
+    custom_css = """
+    /* 轨迹图片样式 */
+    .trajectory-chatbot img {
+        max-width: 280px !important;
+        max-height: 500px !important;
+        width: auto !important;
+        height: auto !important;
+        object-fit: contain !important;
+        cursor: pointer;
+        transition: opacity 0.2s;
+        border-radius: 8px;
+    }
+    .trajectory-chatbot img:hover {
+        opacity: 0.85;
+    }
+    .trajectory-chatbot .message {
+        max-width: 100% !important;
+    }
+    
+    /* 灯箱模态框 */
+    #image-lightbox {
+        display: none;
+        position: fixed;
+        z-index: 9999;
+        left: 0;
+        top: 0;
+        width: 100%;
+        height: 100%;
+        background-color: rgba(0,0,0,0.9);
+        justify-content: center;
+        align-items: center;
+        flex-direction: column;
+    }
+    #image-lightbox.show {
+        display: flex;
+    }
+    #lightbox-img {
+        max-width: 90%;
+        max-height: 80%;
+        object-fit: contain;
+        border-radius: 8px;
+    }
+    #lightbox-controls {
+        margin-top: 20px;
+        display: flex;
+        gap: 15px;
+    }
+    #lightbox-controls button {
+        padding: 10px 25px;
+        font-size: 16px;
+        border: none;
+        border-radius: 6px;
+        cursor: pointer;
+        transition: background 0.2s;
+    }
+    #lightbox-download {
+        background: #4CAF50;
+        color: white;
+    }
+    #lightbox-download:hover {
+        background: #45a049;
+    }
+    #lightbox-close {
+        background: #f44336;
+        color: white;
+    }
+    #lightbox-close:hover {
+        background: #da190b;
+    }
+    """
+    
+    # 灯箱脚本 - 使用head参数注入
+    lightbox_head = """
+    <style>
+    #image-lightbox {
+        display: none;
+        position: fixed;
+        z-index: 99999;
+        left: 0;
+        top: 0;
+        width: 100%;
+        height: 100%;
+        background-color: rgba(0,0,0,0.9);
+        justify-content: center;
+        align-items: center;
+        flex-direction: column;
+        cursor: zoom-out;
+    }
+    #image-lightbox.show {
+        display: flex;
+    }
+    #lightbox-img {
+        max-width: 95%;
+        max-height: 85%;
+        object-fit: contain;
+        border: 2px solid white;
+        border-radius: 8px;
+        box-shadow: 0 0 20px rgba(0,0,0,0.5);
+    }
+    #lightbox-controls {
+        margin-top: 20px;
+        display: flex;
+        gap: 15px;
+        background: rgba(0,0,0,0.5);
+        padding: 10px 20px;
+        border-radius: 30px;
+    }
+    #lightbox-controls button {
+        padding: 8px 20px;
+        font-size: 16px;
+        border: none;
+        border-radius: 20px;
+        cursor: pointer;
+        font-weight: bold;
+        transition: transform 0.1s;
+    }
+    #lightbox-controls button:active { transform: scale(0.95); }
+    #lightbox-download { background: #4CAF50; color: white; }
+    #lightbox-close { background: #f44336; color: white; }
+    
+    /* 强制光标样式方便用户知道可点击 */
+    .trajectory-chatbot img {
+        cursor: zoom-in !important;
+    }
+    </style>
+    <script>
+    (function() {
+        console.log("AutoGLM Lightbox Script Loading...");
+        
+        function initLightbox() {
+            if (document.getElementById('image-lightbox')) return;
+            
+            console.log("Initializing AutoGLM Lightbox...");
+            var lightbox = document.createElement('div');
+            lightbox.id = 'image-lightbox';
+            lightbox.innerHTML = '<img id="lightbox-img" src=""><div id="lightbox-controls"><button id="lightbox-download">📥 下载图片</button><button id="lightbox-close">✕ 关闭</button></div>';
+            document.body.appendChild(lightbox);
+            
+            // 关闭事件
+            lightbox.addEventListener('click', function(e) {
+                if (e.target === lightbox || e.target.id === 'lightbox-close') {
+                    lightbox.classList.remove('show');
+                }
+            });
+            
+            // 下载事件
+            document.getElementById('lightbox-download').addEventListener('click', function(e) {
+                e.stopPropagation();
+                var img = document.getElementById('lightbox-img');
+                if (!img.src) return;
+                var link = document.createElement('a');
+                link.href = img.src;
+                link.download = 'autoglm_screenshot_' + new Date().getTime() + '.jpg';
+                document.body.appendChild(link);
+                link.click();
+                document.body.removeChild(link);
+            });
+        }
+
+        // 立即尝试初始化
+        if (document.body) initLightbox();
+        else window.addEventListener('load', initLightbox);
+
+        // 使用事件委托处理点击
+        document.addEventListener('click', function(e) {
+            // 兼容 Gradio 6.x 的图片点击
+            if (e.target.tagName === 'IMG') {
+                // 检查是否在 Chatbot 中
+                let isChatbotImg = e.target.closest('.trajectory-chatbot') || 
+                                  e.target.closest('.gr-chatbot') ||
+                                  e.target.parentElement.classList.contains('message');
+                
+                if (isChatbotImg) {
+                    initLightbox(); // 确保已初始化
+                    var lightbox = document.getElementById('image-lightbox');
+                    var lbImg = document.getElementById('lightbox-img');
+                    lbImg.src = e.target.src;
+                    lightbox.classList.add('show');
+                    console.log("Lightbox opened for image:", e.target.src.substring(0, 50) + "...");
+                }
+            }
+        }, true); // 使用捕获阶段确保拦截
+    })();
+    </script>
+    """
+    
     with gr.Blocks(title="AutoGLM Web Controller") as demo:
 
         gr.Markdown("## 🤖 Open-AutoGLM 控制台")
 
-        with gr.Tabs():
-            with gr.TabItem("控制台"):
-
         with gr.Row():
-            # --- 左列：设备管理、配置与工具 ---
-            with gr.Column(scale=1, min_width=300):
+            # --- 左列：设备管理、配置与命令 ---
+            with gr.Column(scale=1, min_width=350):
                 
                 # 1. 设备管理
                 with gr.Group():
@@ -472,15 +677,14 @@ def create_ui():
                         label="设备状态",
                         value="❓ 未检查",
                         interactive=False,
-                        lines=4
+                        lines=3
                     )
                     with gr.Row():
                         check_status_btn = gr.Button("🔄 检查", size="sm")
                         adb_devices_btn = gr.Button("📋 列表", size="sm")
                         restart_adb_btn = gr.Button("🔄 重启ADB", size="sm")
 
-                    with gr.Accordion("📶 无线调试", open=True):
-                        gr.Markdown("#### 连接无线设备")
+                    with gr.Accordion("📶 无线调试", open=False):
                         with gr.Row():
                             wireless_ip = gr.Textbox(label="IP", placeholder="192.168.1.x", scale=3)
                             wireless_port = gr.Textbox(label="端口", value="5555", scale=1)
@@ -489,10 +693,8 @@ def create_ui():
                             connect_wireless_btn = gr.Button("🔗 连接", variant="primary", size="sm")
                             disconnect_wireless_btn = gr.Button("✂️ 断开", size="sm")
 
-                        gr.Markdown("#### USB转无线")
                         enable_tcpip_btn = gr.Button("📡 启用TCP/IP模式", size="sm")
-                        
-                        wireless_status = gr.Textbox(label="状态", interactive=False, lines=2)
+                        wireless_status = gr.Textbox(label="状态", interactive=False, lines=1)
 
                 # 2. 参数配置
                 with gr.Group():
@@ -509,8 +711,7 @@ def create_ui():
                                 label="Model",
                                 choices=["gelab-zero-4b-preview", "autoglm-phone-9b"],
                                 value="gelab-zero-4b-preview",
-                                allow_custom_value=True,
-                                interactive=True
+                                allow_custom_value=True
                             )
                             custom_api_key = gr.Textbox(label="API Key", type="password")
                     
@@ -519,388 +720,297 @@ def create_ui():
                         refresh_dev_btn = gr.Button("🔄", scale=1)
 
                 # 3. 实用工具
-                with gr.Group():
-                    gr.Markdown("### 🛠 实用工具")
+                with gr.Accordion("🛠 实用工具", open=False):
                     scrcpy_btn = gr.Button("🖥️ 启动屏幕镜像", variant="secondary")
                     scrcpy_status = gr.Textbox(label="状态", interactive=False, lines=1)
                     
-                    with gr.Accordion("📲 第三方应用列表", open=False):
-                        list_apps_btn = gr.Button("获取应用列表", size="sm")
-                        app_list_output = gr.Textbox(label="应用列表", lines=5, interactive=False)
+                    list_apps_btn = gr.Button("📲 获取应用列表", size="sm")
+                    app_list_output = gr.Textbox(label="应用列表", lines=3, interactive=False)
 
-            # --- 右列：日志与命令 ---
-            with gr.Column(scale=2, min_width=450):
+            # --- 右列：日志、命令、轨迹 ---
+            with gr.Column(scale=3, min_width=700):
+                gr.Markdown("### 📊 任务监控")
                 
-                # 1. 实时日志 (Top)
-                with gr.Group():
-                    gr.Markdown("### 📋 实时日志")
-                    log_output = gr.Textbox(
-                        label="终端实时日志",
-                        value="",
-                        lines=20,
-                        max_lines=30,
-                        interactive=False,
-                        elem_id="log-window"
+                with gr.Row():
+                    session_dropdown = gr.Dropdown(
+                        label="Session",
+                        choices=[],
+                        value=None,
+                        scale=4,
+                        allow_custom_value=True
                     )
-                    with gr.Row():
-                        copy_log_btn = gr.Button("📋 复制日志", size="sm")
-                        clear_log_btn = gr.Button("🗑 清空日志", size="sm")
-                    gr.HTML("""
-                    <div style='margin-top: 10px; font-size: 0.8em; color: #888;'>
-                    💡 日志会自动滚动到最新位置
-                    </div>
-                    """)
-
-                # 2. 命令执行 (Bottom)
-                with gr.Group():
-                    gr.Markdown("### 🎯 命令执行")
+                    refresh_sessions_btn = gr.Button("🔄", scale=1)
+                
+                # 日志和轨迹并排显示
+                with gr.Row():
+                    # 左边：实时日志 + 命令输入
+                    with gr.Column(scale=1):
+                        gr.Markdown("#### 📋 实时日志")
+                        log_output = gr.Textbox(
+                            label="终端输出",
+                            value="",
+                            lines=15,
+                            max_lines=20,
+                            interactive=False,
+                            elem_id="log-window"
+                        )
+                        with gr.Row():
+                            clear_log_btn = gr.Button("🗑 清空", size="sm")
+                            copy_log_btn = gr.Button("📋 复制", size="sm")
+                        
+                        # 命令输入区
+                        gr.Markdown("#### 🎯 命令/回复")
+                        task_status = gr.Textbox(
+                            label="任务状态",
+                            value="⚪ 就绪",
+                            interactive=False,
+                            lines=1
+                        )
+                        user_input = gr.Textbox(
+                            label="输入",
+                            placeholder="新任务 或 回复Agent询问...",
+                            lines=2
+                        )
+                        with gr.Row():
+                            submit_btn = gr.Button("▶ 执行/回复", variant="primary", scale=2)
+                            stop_btn = gr.Button("⏹ 停止", variant="stop", scale=1)
                     
-                    task_status = gr.Textbox(
-                        label="任务状态",
-                        value="⚪ 就绪",
-                        interactive=False,
-                        lines=1
-                    )
-                    
-                    user_input = gr.Textbox(
-                        label="输入指令",
-                        placeholder="例如：打开微信给文件传输助手发你好...",
-                        lines=4
-                    )
-                    
-                    with gr.Row():
-                        submit_btn = gr.Button("▶ 执行任务", variant="primary", scale=2)
-                        stop_btn = gr.Button("⏹ 停止任务", variant="stop", scale=1)
-
-                    with gr.Accordion("💡 命令示例", open=False):
-                        gr.Markdown("""
-                        - 打开美团搜索附近的火锅店
-                        - 发送微信消息给张三
-                        - 打开抖音搜索美食视频
-                        - 设置明天早上8点的闹钟
-                        - 拍照并发送给联系人
-                        """)
+                    # 右边：任务轨迹
+                    with gr.Column(scale=1):
+                        gr.Markdown("#### 📱 任务轨迹")
+                        trajectory_output = gr.Chatbot(
+                            label="轨迹回放",
+                            height=600,
+                            show_label=False,
+                            elem_classes=["trajectory-chatbot"]
+                        )
 
         # --- 逻辑绑定 ---
         
         # 刷新设备
         def refresh_devices():
             devices, _ = get_adb_devices()
-            # 确保设备列表不包含错误信息
             valid_devices = [d for d in devices if not d.startswith("错误") and d != "未找到设备"]
             return gr.Dropdown(choices=valid_devices, value=valid_devices[0] if valid_devices else None)
         
         refresh_dev_btn.click(refresh_devices, outputs=device_dd)
         demo.load(refresh_devices, outputs=device_dd)
 
+        # 刷新session列表
+        def refresh_sessions():
+            sessions = get_available_sessions()
+            current = runner.get_current_session_id()
+            # 如果有当前session且不在列表中，添加到最前面
+            if current and current not in sessions:
+                sessions = [current] + sessions
+            return gr.Dropdown(choices=sessions, value=current if current else (sessions[0] if sessions else None))
+        
+        refresh_sessions_btn.click(refresh_sessions, outputs=session_dropdown)
+        demo.load(refresh_sessions, outputs=session_dropdown)
+
+        # 加载轨迹
+        def load_trajectory(session_id):
+            if not session_id:
+                return []
+            logs = load_session_logs(session_id)
+            messages = logs_to_chatbot_messages(logs)
+            return messages
+        
+        session_dropdown.change(load_trajectory, inputs=[session_dropdown], outputs=[trajectory_output])
+
         # 列出应用
         list_apps_btn.click(get_available_apps, outputs=app_list_output)
 
         # 启动 scrcpy
-        scrcpy_btn.click(
-            fn=start_scrcpy,
-            outputs=[scrcpy_status]
-        )
+        scrcpy_btn.click(fn=start_scrcpy, outputs=[scrcpy_status])
 
-      
-        # 核心：提交命令 - 修改为使用更简单的逻辑
-        def submit_command(prompt, z_key, z_model, z_url, c_url, c_model, c_key, device):
+        # 核心：智能提交（命令 或 回复）
+        def smart_submit(prompt, z_key, z_model, z_url, c_url, c_model, c_key, device):
             if not prompt.strip():
-                return
-
-            # 判断应该使用哪个API配置
-            # 如果智谱AI的API Key有值，优先使用智谱AI，否则使用自定义配置
+                return runner.get_status(), ""
+            
+            # 如果任务正在运行且等待输入，作为回复发送
+            if runner.is_running and runner.is_waiting_for_input():
+                success, msg = runner.send_input(prompt.strip())
+                return runner.get_status(), ""  # 清空输入框
+            
+            # 否则作为新任务启动
+            if runner.is_running:
+                return "⚠️ 任务运行中，请先停止", prompt
+            
             if z_key and z_key.strip():
-                final_url = z_url
-                final_model = z_model
-                final_key = z_key
-                print(f"[WebUI] 使用智谱AI配置: {final_url}")
+                final_url, final_model, final_key = z_url, z_model, z_key
             else:
-                final_url = c_url
-                final_model = c_model
-                final_key = c_key
-                print(f"[WebUI] 使用自定义配置: {final_url}")
+                final_url, final_model, final_key = c_url, c_model, c_key
 
-            # 构造命令
-            # 使用 examples/run_single_task.py 而不是 main.py
             script_path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "examples", "run_single_task.py")
-            cmd_list = [sys.executable, script_path]
+            cmd_list = [sys.executable, script_path, prompt]
             
-            # 添加任务描述 (位置参数)
-            cmd_list.append(prompt)
-            
-            # 添加可选参数
             if final_url: cmd_list.extend(["--base-url", final_url])
             if final_model: cmd_list.extend(["--model", final_model])
             if final_key: cmd_list.extend(["--api-key", final_key])
             if device and device != "未找到设备": 
-                # 从 "📶 无线: 192.168.1.5:5555" 或 "📱 123456 - device" 提取ID
-                # 简单提取: 取冒号或空格前的部分，或者依赖 get_adb_devices 的原始ID
-                # 注意：Dropdown的值是通过 refresh_devices 设置的，它只包含ID
-                # 再次确认 refresh_devices 的逻辑
-                # The dropdown values come from refresh_devices -> get_adb_devices -> device_id only (valid_devices list)
                 cmd_list.extend(["--device-id", device])
 
-            # 启动
             env = os.environ.copy()
             env["PYTHONIOENCODING"] = "utf-8"
             env["PYTHONUNBUFFERED"] = "1"
             
-            # 确保 examples 目录在 PYTHONPATH 中，或者脚本自己处理了
-            # run_single_task.py 必须在项目根目录下运行或者能找到依赖
-            # 我们在 cwd=os.getcwd() (即项目根目录, 假设 start_web_ui.py 在根目录运行)
-            # start_web_ui.py 确实在根目录
-            
-            runner.start(cmd_list, cwd=os.getcwd(), env=env)
+            success, msg = runner.start(cmd_list, cwd=os.getcwd(), env=env)
+            return ("🟢 运行中" if success else f"🔴 {msg}"), ""  # 清空输入框
 
-        # 提交动作
         submit_btn.click(
-            submit_command,
-            inputs=[
-                user_input,
-                api_key, model_name, base_url,
-                custom_base_url, custom_model, custom_api_key,
-                device_dd
-            ]
+            smart_submit,
+            inputs=[user_input, api_key, model_name, base_url, custom_base_url, custom_model, custom_api_key, device_dd],
+            outputs=[task_status, user_input]
         )
+        
         user_input.submit(
-            submit_command,
-            inputs=[
-                user_input,
-                api_key, model_name, base_url,
-                custom_base_url, custom_model, custom_api_key,
-                device_dd
-            ]
+            smart_submit,
+            inputs=[user_input, api_key, model_name, base_url, custom_base_url, custom_model, custom_api_key, device_dd],
+            outputs=[task_status, user_input]
         )
 
-        # 停止动作
-        stop_btn.click(runner.stop, outputs=None)
+        # 停止任务
+        def stop_command():
+            runner.stop()
+            return "⚪ 已停止"
+        
+        stop_btn.click(stop_command, outputs=[task_status])
+
+        # 检查状态
+        def check_status_handler():
+            devices, device_info = get_adb_devices()
+            return device_info if device_info else "❌ 未发现设备"
+
+        check_status_btn.click(check_status_handler, outputs=device_status)
+
+        # 无线调试
+        def handle_connect_wireless(ip, port):
+            success, message = connect_wireless_device(ip, port)
+            if success:
+                devices, device_info = get_adb_devices()
+                return device_info, f"✅ {message}"
+            return "", f"❌ {message}"
+
+        connect_wireless_btn.click(handle_connect_wireless, inputs=[wireless_ip, wireless_port], outputs=[device_status, wireless_status])
+
+        def handle_disconnect_wireless():
+            devices, _ = get_adb_devices()
+            wireless_devices = [d for d in devices if ':' in d]
+            if wireless_devices:
+                disconnect_wireless_device("")
+                devices, device_info = get_adb_devices()
+                return device_info, "✅ 已断开"
+            return "", "ℹ️ 没有无线设备"
+
+        disconnect_wireless_btn.click(handle_disconnect_wireless, outputs=[device_status, wireless_status])
+
+        def handle_enable_tcpip():
+            devices, _ = get_adb_devices()
+            usb_devices = [d for d in devices if ':' not in d and d != "未找到设备" and not d.startswith("错误")]
+            if not usb_devices:
+                return "", "❌ 没有USB设备"
+            success, message = enable_tcpip(usb_devices[0])
+            return (f"✅ {message}", "✅ TCP/IP已启用") if success else ("", f"❌ {message}")
+
+        enable_tcpip_btn.click(handle_enable_tcpip, outputs=[device_status, wireless_status])
+
+        def handle_adb_devices():
+            success, message = check_adb_connection()
+            return message, message
+
+        adb_devices_btn.click(handle_adb_devices, outputs=[device_status, wireless_status])
+
+        def handle_restart_adb():
+            success, message = restart_adb()
+            return message, message
+
+        restart_adb_btn.click(handle_restart_adb, outputs=[device_status, wireless_status])
 
         # 清除日志
         def clear_logs():
             with runner.log_lock:
                 runner.logs = ""
             return ""
-        
-        # 检查状态
-        def check_status_handler():
-            try:
-                # 使用新的设备获取函数
-                devices, device_info = get_adb_devices()
-                if device_info:
-                    return device_info
-                else:
-                    return "❌ 未发现设备"
-            except Exception as e:
-                return f"❌ 错误: {e}"
-
-        check_status_btn.click(check_status_handler, outputs=device_status)
-
-        # 无线调试 - 连接设备
-        def handle_connect_wireless(ip, port):
-            success, message = connect_wireless_device(ip, port)
-            if success:
-                # 连接成功后刷新设备状态
-                devices, device_info = get_adb_devices()
-                return device_info, f"✅ {message}"
-            else:
-                return "", f"❌ {message}"
-
-        connect_wireless_btn.click(
-            handle_connect_wireless,
-            inputs=[wireless_ip, wireless_port],
-            outputs=[device_status, wireless_status]
-        )
-
-        # 无线调试 - 断开设备
-        def handle_disconnect_wireless():
-            # 获取当前无线设备列表
-            devices, _ = get_adb_devices()
-            wireless_devices = [d for d in devices if ':' in d]
-
-            if wireless_devices:
-                # 断开所有无线设备
-                success, message = disconnect_wireless_device("")
-                # 刷新设备状态
-                devices, device_info = get_adb_devices()
-                return device_info, f"✅ 已断开所有无线设备" if success else f"❌ {message}"
-            else:
-                return "", "ℹ️ 没有连接的无线设备"
-
-        disconnect_wireless_btn.click(
-            handle_disconnect_wireless,
-            outputs=[device_status, wireless_status]
-        )
-
-        # USB转无线 - 启用TCP/IP
-        def handle_enable_tcpip():
-            try:
-                # 获取当前USB设备
-                devices, _ = get_adb_devices()
-                usb_devices = [d for d in devices if ':' not in d and d != "未找到设备" and not d.startswith("错误")]
-
-                if not usb_devices:
-                    return "", "❌ 没有找到USB连接的设备"
-
-                # 使用第一个USB设备
-                usb_device = usb_devices[0]
-                success, message = enable_tcpip(usb_device)
-
-                if success:
-                    return f"✅ {message}", "✅ TCP/IP已启用，现在可以无线连接了"
-                else:
-                    return "", f"❌ {message}"
-
-            except Exception as e:
-                return "", f"❌ 启用TCP/IP失败: {str(e)}"
-
-        enable_tcpip_btn.click(
-            handle_enable_tcpip,
-            outputs=[device_status, wireless_status]
-        )
-
-        # ADB设备列表按钮
-        def handle_adb_devices():
-            success, message = check_adb_connection()
-            # 刷新设备状态显示
-            if success:
-                # 只返回设备信息部分
-                lines = message.split('\n')
-                device_lines = []
-                for line in lines:
-                    if line.startswith('📱'):
-                        device_lines.append(line)
-                if device_lines:
-                    return '\n'.join(device_lines), message
-                else:
-                    return "无设备连接", message
-            else:
-                return "检查失败", message
-
-        adb_devices_btn.click(
-            handle_adb_devices,
-            outputs=[device_status, wireless_status]
-        )
-
-        # 重启ADB服务按钮
-        def handle_restart_adb():
-            success, message = restart_adb()
-            # 刷新设备状态显示
-            if success:
-                lines = message.split('\n')
-                device_lines = []
-                for line in lines:
-                    if line.startswith('📱'):
-                        device_lines.append(line)
-                if device_lines:
-                    return '\n'.join(device_lines), message
-                else:
-                    return "ADB服务已重启", message
-            else:
-                return "重启失败", message
-
-        restart_adb_btn.click(
-            handle_restart_adb,
-            outputs=[device_status, wireless_status]
-        )
-
-            # --- 可视化 Tab ---
-            with gr.TabItem("📊 轨迹可视化"):
-                gr.Markdown("### 任务轨迹回放")
-                gr.Markdown("在下方输入 Session ID 查看任务执行详情 (Session ID 可在“控制台”的日志中找到)")
-                
-                # 获取 Streamlit URL，默认为 localhost:8501
-                streamlit_url = os.environ.get("STREAMLIT_URL", "http://localhost:8501")
-                
-                # 使用 HTML iframe 嵌入 Streamlit
-                # 注意：Streamlit 需要允许跨域或相同来源，通常 localhost 没问题
-                gr.HTML(f"""
-                    <iframe src="{streamlit_url}" width="100%" height="800px" frameborder="0"></iframe>
-                """)
-
-        # 复制日志 (JS实现)
-        copy_log_btn.click(
-            fn=None,
-            inputs=[],
-            outputs=[],
-            js="""() => {
-                // Gradio 6.x 中尝试多种选择器
-                let el = document.querySelector('#log-window textarea');
-                if (!el) {
-                    el = document.querySelector('#log-window');
-                }
-                if (!el) {
-                    el = document.querySelector('[data-testid="log-window"] textarea');
-                }
-                if (!el) {
-                    el = document.querySelector('[data-testid="log-window"]');
-                }
-
-                if (el) {
-                    let text = el.value || el.textContent || el.innerText;
-                    if (text) {
-                        navigator.clipboard.writeText(text).then(() => {
-                            alert('日志已复制到剪贴板');
-                        }).catch(err => {
-                            // 降级方案：使用传统方法
-                            try {
-                                const textarea = document.createElement('textarea');
-                                textarea.value = text;
-                                document.body.appendChild(textarea);
-                                textarea.select();
-                                document.execCommand('copy');
-                                document.body.removeChild(textarea);
-                                alert('日志已复制到剪贴板');
-                            } catch (fallbackErr) {
-                                console.error('复制失败:', err);
-                                alert('复制失败，请手动选择文本复制');
-                            }
-                        });
-                    } else {
-                        alert('没有可复制的日志内容');
-                    }
-                } else {
-                    alert('找不到日志窗口');
-                }
-            }"""
-        )
 
         clear_log_btn.click(clear_logs, outputs=log_output)
 
-        # 实时轮询 (0.2s = 5fps)
-        timer = gr.Timer(0.2)
-        timer.tick(
-            fn=lambda: (runner.get_logs(), runner.get_status()),
-            outputs=[log_output, task_status],
-            js="""(logs, status) => {
-                // 简单的 JS 技巧：延迟一下确保DOM更新，然后滚动到底部
-                setTimeout(() => {
-                    // Gradio 6.x 中选择器可能不同
-                    let el = document.querySelector('#log-window textarea');
-                    if (!el) {
-                        // 尝试其他可能的选择器
-                        el = document.querySelector('#log-window');
-                        if (!el) {
-                            el = document.querySelector('[data-testid="log-window"] textarea');
-                        }
-                    }
-                    if (el && el.scrollTop !== undefined) {
-                        el.scrollTop = el.scrollHeight;
-                    }
-                }, 50);
-                return [logs, status];
+        # 复制日志
+        copy_log_btn.click(
+            fn=None, inputs=[], outputs=[],
+            js="""() => {
+                let el = document.querySelector('#log-window textarea');
+                if (el && el.value) {
+                    navigator.clipboard.writeText(el.value).then(() => alert('已复制')).catch(() => alert('复制失败'));
+                }
             }"""
         )
 
-    return demo
+        # 实时轮询
+        timer = gr.Timer(1.0)  # 1秒刷新一次
+        
+        # 保存当前选中的session用于自动刷新轨迹
+        current_selected_session = gr.State(value=None)
+        
+        def poll_updates(selected_session):
+            logs = runner.get_logs()
+            status = runner.get_status()
+            current_session = runner.get_current_session_id()
+            
+            # 获取可用sessions
+            sessions = get_available_sessions()
+            if current_session and current_session not in sessions:
+                sessions = [current_session] + sessions
+            
+            # 确定要显示的session
+            display_session = current_session if current_session else selected_session
+            
+            # 自动加载轨迹(如果有当前运行的session)
+            trajectory_messages = []
+            if display_session:
+                traj_logs = load_session_logs(display_session)
+                trajectory_messages = logs_to_chatbot_messages(traj_logs)
+            
+            return (
+                logs, 
+                status, 
+                gr.Dropdown(choices=sessions, value=display_session),
+                trajectory_messages,
+                display_session
+            )
+        
+        timer.tick(
+            fn=poll_updates,
+            inputs=[current_selected_session],
+            outputs=[log_output, task_status, session_dropdown, trajectory_output, current_selected_session],
+            js="""() => {
+                setTimeout(() => {
+                    let el = document.querySelector('#log-window textarea');
+                    if (el) { el.scrollTop = el.scrollHeight; }
+                }, 100);
+            }"""
+        )
+        
+        # 当用户手动选择session时更新state
+        def on_session_select(session_id):
+            messages = load_trajectory(session_id)
+            return messages, session_id
+        
+        session_dropdown.change(
+            on_session_select,
+            inputs=[session_dropdown],
+            outputs=[trajectory_output, current_selected_session]
+        )
+
+    return demo, custom_css, lightbox_head
 
 if __name__ == "__main__":
-    ui = create_ui()
-    # Gradio 6.x 兼容的启动参数
+    ui, css, head = create_ui()
     ui.launch(
         server_name="0.0.0.0",
         server_port=8870,
         show_error=True,
-        # Gradio 6.x 中一些参数被移动或移除
-        # theme 和 css 参数现在在 Blocks() 中指定
+        css=css,
+        head=head
     )
