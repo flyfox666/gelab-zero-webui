@@ -15,6 +15,7 @@ import datetime
 import json
 import re
 import glob
+import yaml
 
 from PIL import Image
 from io import BytesIO
@@ -717,22 +718,70 @@ def create_ui():
 
                 # 3. 参数配置
                 with gr.Accordion("⚙️ 参数配置", open=False):
-                    with gr.Tabs() as config_tabs:
-                        with gr.TabItem("智谱AI"):
-                            api_key = gr.Textbox(label="API Key", type="password", value=os.environ.get("PHONE_AGENT_API_KEY", ""))
-                            model_name = gr.Textbox(label="Model", value="autoglm-phone", visible=False)
-                            base_url = gr.Textbox(label="Base URL", value="https://open.bigmodel.cn/api/paas/v4", visible=False)
+                    try:
+                        config_path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "model_config.yaml")
+                        with open(config_path, "r", encoding="utf-8") as f:
+                            full_config = yaml.safe_load(f)
+                    except Exception as e:
+                        print(f"Error loading config: {e}")
+                        full_config = {}
 
-                        with gr.TabItem("自定义"):
-                            custom_base_url = gr.Textbox(label="Base URL", value="http://localhost:11434/v1")
-                            custom_model = gr.Dropdown(
-                                label="Model",
-                                choices=["gelab-zero-4b-preview", "autoglm-phone-9b"],
-                                value="gelab-zero-4b-preview",
-                                allow_custom_value=True
-                            )
-                            custom_api_key = gr.Textbox(label="API Key", type="password")
+                    # 准备 Provider 选项: (Display Name, Key)
+                    provider_choices = []
+                    for key, val in full_config.items():
+                        display = val.get("display_name", key)
+                        provider_choices.append((display, key))
+                    provider_choices.append(("自定义", "custom"))
+
+                    # default selection
+                    default_prov = provider_choices[0][1] if provider_choices else "custom"
+                    default_cfg = full_config.get(default_prov, {})
                     
+                    with gr.Row():
+                        provider_dd = gr.Dropdown(
+                            label="模型提供商", 
+                            choices=provider_choices, 
+                            value=default_prov,
+                            scale=1
+                        )
+                    
+                    with gr.Row():
+                        base_url_input = gr.Textbox(
+                            label="Base URL", 
+                            value=default_cfg.get("api_base", ""),
+                            interactive=True
+                        )
+                    
+                    api_key_input = gr.Textbox(
+                        label="API Key", 
+                        type="password", 
+                        value=default_cfg.get("api_key", ""),
+                        interactive=True
+                    )
+                    
+                    # Event: Provider Change
+                    def on_provider_change(provider):
+                        if provider == "custom":
+                            return (
+                                gr.update(value="", interactive=True), 
+                                gr.update(value="", interactive=True)
+                            )
+                        
+                        cfg = full_config.get(provider, {})
+                        new_base = cfg.get("api_base", "")
+                        new_key = cfg.get("api_key", "")
+                        
+                        return (
+                            gr.update(value=new_base), 
+                            gr.update(value=new_key)
+                        )
+
+                    provider_dd.change(
+                        fn=on_provider_change,
+                        inputs=[provider_dd],
+                        outputs=[base_url_input, api_key_input]
+                    )
+
                     with gr.Row():
                         device_dd = gr.Dropdown(label="当前设备", choices=[], value=None, scale=3)
                         refresh_dev_btn = gr.Button("🔄", scale=1)
@@ -813,7 +862,7 @@ def create_ui():
         scrcpy_btn.click(fn=start_scrcpy, outputs=[scrcpy_status])
 
         # 核心：智能提交（命令 或 回复）
-        def smart_submit(prompt, z_key, z_model, z_url, c_url, c_model, c_key, device):
+        def smart_submit(prompt, provider, base_url, api_key, device):
             if not prompt.strip():
                 return runner.get_status(), ""
             
@@ -826,10 +875,10 @@ def create_ui():
             if runner.is_running:
                 return "⚠️ 任务运行中，请先停止", prompt
             
-            if z_key and z_key.strip():
-                final_url, final_model, final_key = z_url, z_model, z_key
-            else:
-                final_url, final_model, final_key = c_url, c_model, c_key
+            # 从配置获取模型名称
+            final_url = base_url
+            final_model = full_config.get(provider, {}).get("default_model", "")
+            final_key = api_key
 
             script_path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "examples", "run_single_task.py")
             cmd_list = [sys.executable, script_path, prompt]
@@ -849,13 +898,13 @@ def create_ui():
 
         submit_btn.click(
             smart_submit,
-            inputs=[user_input, api_key, model_name, base_url, custom_base_url, custom_model, custom_api_key, device_dd],
+            inputs=[user_input, provider_dd, base_url_input, api_key_input, device_dd],
             outputs=[task_status, user_input]
         )
         
         user_input.submit(
             smart_submit,
-            inputs=[user_input, api_key, model_name, base_url, custom_base_url, custom_model, custom_api_key, device_dd],
+            inputs=[user_input, provider_dd, base_url_input, api_key_input, device_dd],
             outputs=[task_status, user_input]
         )
 
