@@ -3,5 +3,5 @@ local:
     api_key: "EMPTY"
 
 stepfun:
-    api_base: "https://api.stepfun.com/v1"
-    api_key: "EMPTY"
+    api_base: https://open.bigmodel.cn/api/paas/v4/ #"https://api.stepfun.com/v1"
+    api_key: "E702ceb71047b4871b4ff2b669a2839e0.qU7OCicvf7k7nGvu"

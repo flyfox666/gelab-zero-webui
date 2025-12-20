@@ -474,7 +474,7 @@ def restart_adb():
 # --- Gradio 界面 ---
 
 def create_ui():
-    # 自定义CSS：限制轨迹图片大小 + 灯箱效果
+    # 自定义CSS：简洁样式
     custom_css = """
     /* 轨迹图片样式 */
     .trajectory-chatbot img {
@@ -492,57 +492,6 @@ def create_ui():
     }
     .trajectory-chatbot .message {
         max-width: 100% !important;
-    }
-    
-    /* 灯箱模态框 */
-    #image-lightbox {
-        display: none;
-        position: fixed;
-        z-index: 9999;
-        left: 0;
-        top: 0;
-        width: 100%;
-        height: 100%;
-        background-color: rgba(0,0,0,0.9);
-        justify-content: center;
-        align-items: center;
-        flex-direction: column;
-    }
-    #image-lightbox.show {
-        display: flex;
-    }
-    #lightbox-img {
-        max-width: 90%;
-        max-height: 80%;
-        object-fit: contain;
-        border-radius: 8px;
-    }
-    #lightbox-controls {
-        margin-top: 20px;
-        display: flex;
-        gap: 15px;
-    }
-    #lightbox-controls button {
-        padding: 10px 25px;
-        font-size: 16px;
-        border: none;
-        border-radius: 6px;
-        cursor: pointer;
-        transition: background 0.2s;
-    }
-    #lightbox-download {
-        background: #4CAF50;
-        color: white;
-    }
-    #lightbox-download:hover {
-        background: #45a049;
-    }
-    #lightbox-close {
-        background: #f44336;
-        color: white;
-    }
-    #lightbox-close:hover {
-        background: #da190b;
     }
     """
     
@@ -700,9 +649,9 @@ def create_ui():
     </script>
     """
     
-    with gr.Blocks(title="AutoGLM Web Controller") as demo:
+    with gr.Blocks(title="Stepfun-ai/gelab-zero") as demo:
 
-        gr.Markdown("## 🤖 Open-AutoGLM 控制台")
+        gr.Markdown("## 🤖 Stepfun-ai/gelab-zero 控制台")
 
         with gr.Row():
             # --- 左列：设备管理、配置、任务监控 ---
@@ -719,9 +668,9 @@ def create_ui():
                         lines=3
                     )
                     with gr.Row():
-                        check_status_btn = gr.Button("🔄 检查", size="sm")
-                        adb_devices_btn = gr.Button("📋 列表", size="sm")
-                        restart_adb_btn = gr.Button("🔄 重启ADB", size="sm")
+                        check_status_btn = gr.Button("检查", size="sm", min_width=1, scale=1)
+                        adb_devices_btn = gr.Button("列表", size="sm", min_width=1, scale=1)
+                        restart_adb_btn = gr.Button("重启ADB", size="sm", min_width=1, scale=1)
 
                     with gr.Accordion("📶 无线调试", open=False):
                         with gr.Row():
@@ -743,10 +692,13 @@ def create_ui():
                             label="Session",
                             choices=[],
                             value=None,
-                            scale=4,
-                            allow_custom_value=True
+                            scale=20,
+                            allow_custom_value=True,
+                            min_width=200
                         )
-                        refresh_sessions_btn = gr.Button("🔄", scale=1)
+                        with gr.Column(scale=1, min_width=60):
+                            gr.HTML("<div style='height: 26px;'></div>") # 占位符对其下拉框
+                            refresh_sessions_btn = gr.Button("🔄", size="sm")
                     
                     task_status = gr.Textbox(
                         label="任务状态",
@@ -988,8 +940,10 @@ def create_ui():
         
         # 保存当前选中的session用于自动刷新轨迹
         current_selected_session = gr.State(value=None)
+        # 保存上一次检测到的运行中session，用于判断是否启动了新任务
+        last_detected_session = gr.State(value=None)
         
-        def poll_updates(selected_session):
+        def poll_updates(selected_session, last_session):
             logs = runner.get_logs()
             status = runner.get_status()
             current_session = runner.get_current_session_id()
@@ -999,31 +953,56 @@ def create_ui():
             if current_session and current_session not in sessions:
                 sessions = [current_session] + sessions
             
-            # 确定要显示的session
-            display_session = current_session if current_session else selected_session
+            # 判断是否启动了新任务（current_session 发生变化且不为空）
+            new_task_started = (current_session and current_session != last_session)
             
-            # 自动加载轨迹(如果有当前运行的session)
+            # 确定要显示的session：
+            # 1. 如果启动了新任务，自动切换到新的session
+            # 2. 否则，如果用户已手动选择了session，保持用户选择
+            # 3. 只有当用户未选择时(None)，才使用当前运行的session
+            if new_task_started:
+                display_session = current_session
+                new_selected = current_session  # 更新用户选择为新session
+            elif selected_session:
+                display_session = selected_session
+                new_selected = selected_session
+            else:
+                display_session = current_session
+                new_selected = current_session
+            
+            # 自动加载轨迹
             trajectory_messages = []
             if display_session:
                 traj_logs = load_session_logs(display_session)
                 trajectory_messages = logs_to_chatbot_messages(traj_logs)
+            
+            # 更新 last_detected_session 为当前检测到的session
+            new_last_session = current_session if current_session else last_session
             
             return (
                 logs, 
                 status, 
                 gr.Dropdown(choices=sessions, value=display_session),
                 trajectory_messages,
-                display_session
+                new_selected,
+                new_last_session
             )
         
         timer.tick(
             fn=poll_updates,
-            inputs=[current_selected_session],
-            outputs=[log_output, task_status, session_dropdown, trajectory_output, current_selected_session],
+            inputs=[current_selected_session, last_detected_session],
+            outputs=[log_output, task_status, session_dropdown, trajectory_output, current_selected_session, last_detected_session],
             js="""() => {
                 setTimeout(() => {
-                    let el = document.querySelector('#log-window textarea');
-                    if (el) { el.scrollTop = el.scrollHeight; }
+                    // 日志窗口自动滚动
+                    let logEl = document.querySelector('#log-window textarea');
+                    if (logEl) { logEl.scrollTop = logEl.scrollHeight; }
+                    // 轨迹窗口自动滚动
+                    let trajEl = document.querySelector('.trajectory-chatbot');
+                    if (trajEl) {
+                        let scrollContainer = trajEl.querySelector('[class*="chatbot"]') || trajEl;
+                        scrollContainer.scrollTop = scrollContainer.scrollHeight;
+                    }
                 }, 100);
             }"""
         )
