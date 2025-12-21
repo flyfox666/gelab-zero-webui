@@ -4,4 +4,4 @@ local:
 
 stepfun:
     api_base: "https://api.stepfun.com/v1"
-    api_key: "5FfNAml1pOVIUcSMKubXuQAlES69DjnOZjX93DR8qR7Stsfk6gpQKEccm5yfwNJKA"
+    api_key: ""
