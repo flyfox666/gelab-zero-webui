@@ -357,6 +357,47 @@ AN2CVB4C28000731        device
 
 If you do not see any devices, please check if the USB cable and the USB debugging settings on your phone are correctly enabled. When connecting the phone for the first time, an authorization prompt may pop up on the phone; simply select "Allow." As shown in the image below:
 
+### Wireless Debugging in Web UI (Recommended)
+
+1. **Prepare Device**
+   - Ensure phone and computer are on the same WiFi network
+   - On phone: Settings → Developer Options → Wireless Debugging (Enable)
+
+2. **Connect Wireless Device**
+   - Open Web UI (http://localhost:8865)
+   - Find "📶 Wireless Debugging" section in the left panel (expanded by default)
+   - Enter the phone's IP address (visible in phone's wireless debugging settings)
+   - Port defaults to 5555, modify as your phone settings
+   - Click "🔗 Connect Wireless Device" button
+
+3. **USB to Wireless**
+   - If your device is USB connected:
+   - Click "📡 Enable TCP/IP Mode (USB to Wireless)"
+   - System will automatically get device IP and enable wireless mode
+   - Disconnect USB cable and use wireless connection
+
+4. **Manage Devices**
+   - Click "🔄 Check Device Status" to view all connected devices
+   - Click "📋 ADB Device List" to get detailed device connection information
+   - Click "🔄 Restart ADB Service" to resolve ADB connection issues
+   - System will show device type: 🔌 USB or 📶 Wireless
+   - Click "✂️ Disconnect Wireless Device" to disconnect wireless connection
+
+### Command Line Method
+
+```bash
+# Connect via WiFi
+adb connect 192.168.1.100:5555
+
+# Verify connection
+adb devices
+
+# View device list
+adb devices
+
+# Restart ADB service
+adb kill-server
+adb start-server
 
 <div style="display: flex; align-items: center; justify-content: center; width: 80%; margin: 0 auto;">
   <img src="images/developer_mode_auth.png" alt="Authorization Prompt on Xiaomi" style="flex: 1; height: 230px; object-fit: contain; margin-right: 1px;"/>
