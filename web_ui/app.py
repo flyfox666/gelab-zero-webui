@@ -797,7 +797,17 @@ def create_ui():
             # --- 右列：日志与轨迹并排（更大空间） ---
             with gr.Column(scale=3, min_width=700):
                 with gr.Row():
-                    # 左边：实时日志
+                    # 左边：任务轨迹
+                    with gr.Column(scale=1):
+                        gr.Markdown("### 📱 任务轨迹")
+                        trajectory_output = gr.Chatbot(
+                            label="轨迹回放",
+                            height=700,
+                            show_label=False,
+                            elem_classes=["trajectory-chatbot"]
+                        )
+                    
+                    # 右边：实时日志
                     with gr.Column(scale=1):
                         gr.Markdown("### 📋 实时日志")
                         log_output = gr.Textbox(
@@ -811,16 +821,6 @@ def create_ui():
                         with gr.Row():
                             clear_log_btn = gr.Button("🗑 清空", size="sm")
                             copy_log_btn = gr.Button("📋 复制", size="sm")
-                    
-                    # 右边：任务轨迹
-                    with gr.Column(scale=1):
-                        gr.Markdown("### 📱 任务轨迹")
-                        trajectory_output = gr.Chatbot(
-                            label="轨迹回放",
-                            height=700,
-                            show_label=False,
-                            elem_classes=["trajectory-chatbot"]
-                        )
 
         # --- 逻辑绑定 ---
         
@@ -1043,12 +1043,21 @@ def create_ui():
             outputs=[log_output, task_status, session_dropdown, trajectory_output, current_selected_session, last_detected_session],
             js="""() => {
                 setTimeout(() => {
-                    // 日志窗口自动滚动
+                    // 检测日志内容是否包含"任务结束"
                     let logEl = document.querySelector('#log-window textarea');
-                    if (logEl) { logEl.scrollTop = logEl.scrollHeight; }
-                    // 轨迹窗口自动滚动
+                    let taskEnded = false;
+                    if (logEl && logEl.value) {
+                        taskEnded = logEl.value.includes('任务结束');
+                    }
+                    
+                    // 只在任务未结束时自动滚动日志窗口
+                    if (logEl && !taskEnded) { 
+                        logEl.scrollTop = logEl.scrollHeight; 
+                    }
+                    
+                    // 轨迹窗口：只在任务未结束时自动滚动
                     let trajEl = document.querySelector('.trajectory-chatbot');
-                    if (trajEl) {
+                    if (trajEl && !taskEnded) {
                         let scrollContainer = trajEl.querySelector('[class*="chatbot"]') || trajEl;
                         scrollContainer.scrollTop = scrollContainer.scrollHeight;
                     }

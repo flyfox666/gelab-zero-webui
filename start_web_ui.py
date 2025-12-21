@@ -56,8 +56,8 @@ def main():
     print("\n正在启动Web界面...")
     print("正在尝试可用端口...")
 
-    # 强制尝试清理端口 8865
-    target_port = 8865
+    # 强制尝试清理端口 8866
+    target_port = 8866
     print(f"\n检查端口 {target_port} 占用情况...")
     try:
         # Windows下查找占用端口的进程
