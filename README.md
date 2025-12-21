@@ -1,4 +1,5 @@
-![GELab-Zero Main Image](./images/main_en.png)
+
+<img width="1920" height="1606" alt="Stepfun-ai-gelab-zero-12-21-2025_09_05_PM" src="https://github.com/user-attachments/assets/b8f2227b-56c6-4f60-ba86-4dcbe7b49835" />
 
 > 👋 Hi, everyone! We are proud to present the first fully open-source GUI Agent with both model and infrastructure. Our solution features plug-and-play engineering with no cloud dependencies, giving you complete privacy control.
 
@@ -16,18 +17,6 @@
   <a href="./README_CN.md">简体中文</a>
 </p>
 
-## 📰 News
-
-* 🎁 **[2025-12-18]** We release **Step-GUI Technical Report** on [**arXiv**](https://arxiv.org/abs/2512.15431)!
-* 🎁 **[2025-12-18]** We release a more powerful **API** for GUI automation tasks. [Apply for API access here](https://wvixbzgc0u7.feishu.cn/share/base/form/shrcnNStxEmuE7aY6jTW07CZHMf)!
-* 🎁 **[2025-12-12]** We release **MCP-Server** support for multi-device management and task distribution. See [Installation & Quick Start](#-installation-quick-start) and [MCP-Server Setup](#optional-mcp-server-setup) for setup instructions.
-* 🎁 **[2025-12-1]** We thank the following projects and authors for providing quantization tools & tutorials: [GGUF_v1](https://huggingface.co/bartowski/stepfun-ai_GELab-Zero-4B-preview-GGUF), [GGUF_v2](https://huggingface.co/noctrex/GELab-Zero-4B-preview-GGUF), [EXL3](https://huggingface.co/ArtusDev/stepfun-ai_GELab-Zero-4B-preview-EXL3), [Tutorials_CN](http://xhslink.com/o/1WrmgHGWFYh), [Tutorials_EN](https://www.youtube.com/watch?v=4BMiDyQOpos)
-* 🎁 **[2025-11-31]** We release a lightweight **4B** model GELab-Zero-4B-preview on [**Hugging Face**](https://huggingface.co/stepfun-ai/GELab-Zero-4B-preview) and [**Model Scope**](https://modelscope.cn/models/stepfun-ai/GELab-Zero-4B-preview).
-* 🎁 **[2025-11-31]** We release the tasks from the [**AndroidDaily**](https://huggingface.co/datasets/stepfun-ai/AndroidDaily) benchmark.
-* 🎁 **[2025-11-30]** We release the current **GELab-Zero** engineering infrastructure.
-* 🎁 **[2025-10]** Our [**research**](https://github.com/summoneryhl/gelab-engine) paper on GELab-Engine is accepted by **NeurIPS 2025**.
-
-
 
 ## 📑 Table of Contents
 
@@ -36,15 +25,6 @@
 - [🏆 Open Benchmark](#-open-benchmark)
 - [🚀 Installation & Quick Start](#-installation-quick-start)
 - [📝 Citation](#-citation)
-
-
-## 📧 Contact
-
-You can contact us and communicate with us by joining our WeChat group:
-
-| WeChat Group |
-|:-------------------------:|
-| <img src="images/wechat_group2.jpeg" width="200"> |
 
 
 
