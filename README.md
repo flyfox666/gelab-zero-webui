@@ -396,9 +396,42 @@ cd gelab-zero
 # Install dependencies
 pip install -r requirements.txt
 
-# To inference a single task
+# To inference a single task (Command Line)
 python examples/run_single_task.py
+
+# Or use the Web UI (Recommended)
+python start_web_ui.py
 ```
+
+#### Web UI Features
+
+The Web UI provides a more user-friendly way to interact with GELab-Zero, featuring a two-column layout:
+
+**Left Panel - Control**
+
+| Module | Features |
+|--------|----------|
+| **📱 Device Management** | Check device status, view device list, restart ADB service |
+| **📶 Wireless Debugging** | Connect device via IP address, enable TCP/IP mode, disconnect |
+| **📊 Task Monitoring** | View task status (Ready/Running/Waiting for Input), select historical Sessions |
+| **💬 Command/Reply** | Enter task instructions or reply to Agent queries, supports `Ctrl+Enter` shortcut |
+| **⚙️ Model Configuration** | Select model provider (auto-loaded from `model_config.yaml`), set Base URL and API Key |
+| **🛠 Utilities** | Launch scrcpy screen mirroring, get installed app list |
+
+**Right Panel - Display**
+
+| Module | Features |
+|--------|----------|
+| **📱 Task Trajectory** | Visual replay of each execution step, including screenshots, thought process, and action details |
+| **📋 Real-time Logs** | Real-time display of task execution terminal output, with clear and copy buttons |
+
+**Interaction Enhancements**
+
+- **🔄 Smart Auto-scroll**: Auto-scrolls during task execution; stops when task completes, allowing free navigation through history
+- **🖼️ Image Lightbox**: Click screenshots in trajectory to view full-size, with download support
+- **⌨️ Keyboard Shortcut**: `Ctrl+Enter` to quickly submit commands/replies
+
+After starting the Web UI, open your browser and go to `http://localhost:8866` to access the interface.
 
 ### (Optional) Step 4: Trajectory Visualization Environment Setup
 
