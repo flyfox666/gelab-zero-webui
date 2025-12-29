@@ -150,9 +150,93 @@ if __name__ == "__main__":
     print(f"Device: {device_id}")
     print(f"Model: {tmp_rollout_config['model_config']['model_name']}")
     
-    # Disable auto reply
-    evaluate_task_on_device(l2_server, device_info, task, tmp_rollout_config, reflush_app=True)
+    # 使用 gui_agent_loop 支持暂停/继续
+    from copilot_agent_client.mcp_agent_loop import gui_agent_loop, clear_pause_signal
+    
+    # 清除可能存在的旧暂停信号
+    clear_pause_signal()
+    
+    # 首次执行任务
+    result = gui_agent_loop(
+        agent_server=l2_server,
+        agent_loop_config=tmp_rollout_config,
+        device_id=device_id,
+        max_steps=tmp_rollout_config.get('max_steps', 400),
+        reply_mode="pass_to_client",  # 支持暂停
+        task=task,
+    )
+    
+    # 暂停/继续循环
+    total_steps = result.get('global_step_idx', 0)
+    while True:
+        stop_reason = result.get('stop_reason')
+        
+        # 情况1: 用户手动暂停
+        if stop_reason == 'USER_PAUSED':
+            print("\n[PAUSED] 任务已暂停。请在 Web UI 输入补充信息并点击 [执行/回复] 继续...")
+            # 关键：这里阻塞等待 Web UI 发送输入
+            # 输入格式约定: "__PAUSE_INPUT__:用户实际输入的文本"
+            # Web UI 需要发送这个前缀，或者我们直接接受任何输入
+            user_input = input("WAITING_FOR_INPUT")
+            
+            print(f"[RESUME] 收到补充信息: {user_input}")
+            
+            remaining_steps = tmp_rollout_config.get('max_steps', 400) - total_steps
+            if remaining_steps <= 0:
+                print("[WARNING] 已达到最大步数限制")
+                break
+            
+            result = gui_agent_loop(
+                agent_server=l2_server,
+                agent_loop_config=tmp_rollout_config,
+                device_id=device_id,
+                max_steps=remaining_steps,
+                reply_mode="pass_to_client",
+                session_id=result['session_id'],  # 继续会话
+                reply_from_client=user_input,  # 注入补充信息
+            )
+            total_steps = result.get('global_step_idx', total_steps)
+            continue
+
+        # 情况2: 之前的逻辑 (USER_PAUSED_WITH_NEW_PROMPT 已弃用)
+        elif stop_reason == 'USER_PAUSED_WITH_NEW_PROMPT':
+             # 兼容旧逻辑，但不应该再走到这里
+             pass
+             
+        # 其他情况：INFO需要回复，或者任务结束
+        break
+    
+    # original loop for INFO action handling
+    while result.get('stop_reason') == 'INFO_ACTION_NEEDS_REPLY':
+        info_action = result.get('final_action', {}).get('agent_action', {})
+        print(f"\n[INFO] Agent 询问: {info_action.get('value', '未知问题')}")
+        print("请在 Web UI 中回复或输入回复内容:")
+        
+        reply_info = input("Your reply: ")
+        
+        remaining_steps = tmp_rollout_config.get('max_steps', 400) - total_steps
+        if remaining_steps <= 0:
+            print("[WARNING] 已达到最大步数限制")
+            break
+        
+        result = gui_agent_loop(
+            agent_server=l2_server,
+            agent_loop_config=tmp_rollout_config,
+            device_id=device_id,
+            max_steps=remaining_steps,
+            reply_mode="pass_to_client",
+            session_id=result['session_id'],
+            reply_from_client=reply_info,
+        )
+        total_steps = result.get('global_step_idx', total_steps)
+        
+        # 检查是否又被暂停了
+        if result.get('stop_reason') == 'USER_PAUSED_WITH_NEW_PROMPT':
+            continue  # 继续外层的暂停/继续循环
+    
     total_time = time.time() - total_start
 
     # 在最后加一行总时间
     print(f"总计执行时间为 {total_time} 秒")
+    print(f"最终状态: {result.get('stop_reason', 'UNKNOWN')}")
+

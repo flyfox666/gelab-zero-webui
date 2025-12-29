@@ -230,7 +230,7 @@ class CommandRunner:
                         print(f"[WebUI] 捕获到 Session ID: {self.current_session_id}")
                     
                     # 检测是否需要用户输入
-                    if 'Please Reply:' in line or '回复一下' in line:
+                    if any(k in line for k in ['Please Reply:', '回复一下', '[PAUSED]', 'WAITING_FOR_INPUT']):
                         with self.log_lock:
                             self.waiting_for_input = True
             
@@ -406,7 +406,7 @@ def start_scrcpy():
         if not devices:
             return "没有检测到已连接的设备"
 
-        scrcpy_cmd = [scrcpy_path]
+        scrcpy_cmd = [scrcpy_path, '--no-audio']
         if len(devices) > 1:
             scrcpy_cmd.extend(['-s', devices[0]])
 
@@ -735,6 +735,7 @@ def create_ui():
                     )
                     with gr.Row():
                         submit_btn = gr.Button("▶ 执行/回复", variant="primary", scale=2, elem_id="submit-btn")
+                        pause_btn = gr.Button("⏸ 暂停", variant="secondary", scale=1)
                         stop_btn = gr.Button("⏹ 停止", variant="stop", scale=1)
 
                 # 3. 参数配置
@@ -936,6 +937,28 @@ def create_ui():
         
         stop_btn.click(stop_command, outputs=[task_status])
 
+        # 暂停任务并注入补充信息
+        # 暂停任务并注入补充信息
+        def pause_and_inject(prompt_text):
+            """暂停当前任务"""
+            if not runner.is_running:
+                return "⚠️ 没有正在运行的任务"
+            
+            # 写入暂停信号文件 - 使用绝对路径
+            pause_file = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "tmp_screenshot", "pause_signal.txt")
+            os.makedirs(os.path.dirname(pause_file), exist_ok=True)
+            try:
+                # 写入固定内容 "PAUSE" 表示暂停信号
+                with open(pause_file, 'w', encoding='utf-8') as f:
+                    f.write("PAUSE")
+                print(f"[DEBUG] 暂停信号已写入: {pause_file}")
+                return "⏸ 暂停信号已发送，任务将暂停并等待输入..."
+            except Exception as e:
+                print(f"[DEBUG] 暂停信号写入失败: {e}")
+                return f"❌ 暂停失败: {e}"
+        
+        pause_btn.click(pause_and_inject, inputs=[user_input], outputs=[task_status])
+
         # 检查状态
         def check_status_handler():
             devices, device_info = get_adb_devices()
@@ -1016,7 +1039,16 @@ def create_ui():
         def poll_updates(dropdown_value, was_running, last_session, user_switched):
             """轮询更新日志、状态和轨迹"""
             logs = runner.get_logs()
-            status = runner.get_status()
+            
+            # 检查是否有暂停信号待处理 - 使用绝对路径
+            pause_file = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "tmp_screenshot", "pause_signal.txt")
+            if runner.is_waiting_for_input():
+                status = "⏸ 已暂停 (等待输入...)"
+            elif os.path.exists(pause_file) and runner.is_running:
+                status = "⏸ 暂停信号已发送，等待任务暂停..."
+            else:
+                status = runner.get_status()
+            
             is_running = runner.is_running
             current_running_session = runner.get_current_session_id()
             

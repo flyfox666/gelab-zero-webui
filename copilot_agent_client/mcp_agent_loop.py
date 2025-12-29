@@ -27,6 +27,42 @@ from tools.ask_llm_v2 import ask_llm_anything
 
 import threading
 
+# 暂停信号文件路径 - 使用绝对路径基于项目根目录
+def get_pause_signal_file():
+    """获取暂停信号文件的绝对路径"""
+    # 从 copilot_agent_client 目录向上一级找到项目根目录
+    project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    return os.path.join(project_root, "tmp_screenshot", "pause_signal.txt")
+
+def check_pause_signal():
+    """
+    检查是否有外部暂停信号。
+    如果存在暂停信号文件，删除文件并返回 True (should_pause).
+    Returns: should_pause: bool
+    """
+    pause_file = get_pause_signal_file()
+    if os.path.exists(pause_file):
+        try:
+            # 仅检测文件存在，不需要读取内容
+            os.remove(pause_file)
+            print(f"[DEBUG] 检测到暂停信号: {pause_file}")
+            return True
+        except Exception as e:
+            print(f"[WARNING] 读取/删除暂停信号文件失败: {e}")
+            return False
+    return False
+
+def clear_pause_signal():
+    """清除暂停信号文件（如果存在）"""
+    pause_file = get_pause_signal_file()
+    if os.path.exists(pause_file):
+        try:
+            os.remove(pause_file)
+            print(f"[DEBUG] 已清除暂停信号: {pause_file}")
+        except:
+            pass
+
+
 def auto_reply(current_image_url, task, info_action, model_provider, model_name):
     """
     Reply with information action.
@@ -266,6 +302,14 @@ def gui_agent_loop(
     # restart the steps from 0, even continuing an existing session
     for step_idx in range(max_steps):
 
+        # >>> 检查外部暂停信号 <<<
+        # >>> 检查外部暂停信号 <<<
+        should_pause = check_pause_signal()
+        if should_pause:
+            print(f"[PAUSED] 检测到暂停信号，暂停任务...")
+            stop_reason = "USER_PAUSED"
+            break
+
         if not dectect_screen_on(device_id):
             print("Screen is off, turn on the screen first")
             stop_reason = "MANUAL_STOP_SCREEN_OFF"
@@ -313,7 +357,8 @@ def gui_agent_loop(
         # assume when reply info is provided, it must be used for current step
         if reply_info is not None:
             print(f"Using reply from client: {reply_info}")
-            payload['observation']['query'] = reply_info
+            # 增强提示，确保LLM重视用户指令
+            payload['observation']['query'] = f"User Intervention: {reply_info}. Please prioritize this instruction."
             reply_info = None  # reset after use
 
         server_return = agent_server.automate_step(payload)
@@ -423,9 +468,11 @@ def gui_agent_loop(
             return_log['intermediate_logs'] = []
         pass
 
-    if stop_reason in ['MANUAL_STOP_SCREEN_OFF', 'INFO_ACTION_NEEDS_REPLY', "NOT_STARTED"]:
+    if stop_reason in ['MANUAL_STOP_SCREEN_OFF', 'INFO_ACTION_NEEDS_REPLY', "NOT_STARTED", "USER_PAUSED"]:
         pass
-    elif  action['action_type'].upper() == 'COMPLETE':
+    elif action is None:
+        pass
+    elif action['action_type'].upper() == 'COMPLETE':
         stop_reason = "TASK_COMPLETED_SUCCESSFULLY"
     elif action['action_type'].upper() == 'ABORT':
         stop_reason = "TASK_ABORTED_BY_AGENT"
