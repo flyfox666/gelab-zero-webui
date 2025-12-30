@@ -771,7 +771,14 @@ def create_ui():
                         base_url_input = gr.Textbox(
                             label="Base URL", 
                             value=default_cfg.get("api_base", ""),
-                            interactive=True
+                            interactive=True,
+                            scale=2
+                        )
+                        model_name_input = gr.Textbox(
+                            label="模型名称",
+                            value=default_cfg.get("default_model", ""),
+                            interactive=(default_prov == "custom"),
+                            scale=1
                         )
                     
                     api_key_input = gr.Textbox(
@@ -786,22 +793,25 @@ def create_ui():
                         if provider == "custom":
                             return (
                                 gr.update(value="", interactive=True), 
+                                gr.update(value="", interactive=True),
                                 gr.update(value="", interactive=True)
                             )
                         
                         cfg = full_config.get(provider, {})
                         new_base = cfg.get("api_base", "")
                         new_key = cfg.get("api_key", "")
+                        new_model = cfg.get("default_model", "")
                         
                         return (
                             gr.update(value=new_base), 
-                            gr.update(value=new_key)
+                            gr.update(value=new_key),
+                            gr.update(value=new_model, interactive=False)
                         )
 
                     provider_dd.change(
                         fn=on_provider_change,
                         inputs=[provider_dd],
-                        outputs=[base_url_input, api_key_input]
+                        outputs=[base_url_input, api_key_input, model_name_input]
                     )
 
                     with gr.Row():
@@ -884,7 +894,7 @@ def create_ui():
         scrcpy_btn.click(fn=start_scrcpy, outputs=[scrcpy_status])
 
         # 核心：智能提交（命令 或 回复）
-        def smart_submit(prompt, provider, base_url, api_key, device):
+        def smart_submit(prompt, provider, base_url, api_key, model_name, device):
             if not prompt.strip():
                 return runner.get_status(), ""
             
@@ -897,9 +907,9 @@ def create_ui():
             if runner.is_running:
                 return "⚠️ 任务运行中，请先停止", prompt
             
-            # 从配置获取模型名称
+            # 从配置或输入获取参数
             final_url = base_url
-            final_model = full_config.get(provider, {}).get("default_model", "")
+            final_model = model_name
             final_key = api_key
 
             script_path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "examples", "run_single_task.py")
@@ -920,13 +930,13 @@ def create_ui():
 
         submit_btn.click(
             smart_submit,
-            inputs=[user_input, provider_dd, base_url_input, api_key_input, device_dd],
+            inputs=[user_input, provider_dd, base_url_input, api_key_input, model_name_input, device_dd],
             outputs=[task_status, user_input]
         )
         
         user_input.submit(
             smart_submit,
-            inputs=[user_input, provider_dd, base_url_input, api_key_input, device_dd],
+            inputs=[user_input, provider_dd, base_url_input, api_key_input, model_name_input, device_dd],
             outputs=[task_status, user_input]
         )
 
