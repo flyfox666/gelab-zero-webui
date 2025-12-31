@@ -329,6 +329,8 @@ class CommandRunner:
         self.log_lock = threading.Lock()
         self.current_session_id = None  # 追踪当前session ID
         self.waiting_for_input = False  # 是否等待用户输入
+        self.paused_session_id = None   # 暂停时的session ID
+        self.is_paused = False          # 是否处于暂停状态
         
     def start(self, cmd_args, cwd=None, env=None):
         """启动新命令"""
@@ -348,8 +350,11 @@ class CommandRunner:
         thread.start()
         return True, "任务已启动"
 
-    def stop(self):
-        """停止当前任务"""
+    def stop(self, is_pause=False):
+        """停止当前任务
+        Args:
+            is_pause: 如果是暂停操作,保存session_id供后续继续
+        """
         if self.process and self.process.poll() is None:
             try:
                 self.process.terminate()
@@ -358,6 +363,12 @@ class CommandRunner:
                     self.process.kill()
             except Exception as e:
                 self._append_log(f"\n[系统] 停止进程失败: {e}\n")
+        
+        if is_pause:
+            # 暂停模式: 保存session_id,标记暂停状态
+            with self.log_lock:
+                self.paused_session_id = self.current_session_id
+                self.is_paused = True
         
         self.is_running = False
         return True, "任务停止指令已发送"
@@ -434,6 +445,8 @@ class CommandRunner:
             return self.logs
 
     def get_status(self):
+        if self.is_paused:
+            return "⏸ 已暂停 - 输入修正指令后点击 [执行/回复] 继续"
         if self.waiting_for_input:
             return "🟡 等待输入"
         return "🟢 运行中" if self.is_running else "⚪ 就绪"
@@ -442,9 +455,19 @@ class CommandRunner:
         with self.log_lock:
             return self.current_session_id
     
+    def get_paused_session_id(self):
+        with self.log_lock:
+            return self.paused_session_id
+    
     def is_waiting_for_input(self):
         with self.log_lock:
             return self.waiting_for_input
+    
+    def clear_pause_state(self):
+        """清除暂停状态"""
+        with self.log_lock:
+            self.is_paused = False
+            self.paused_session_id = None
 
 # 全局单例
 runner = CommandRunner()
@@ -933,33 +956,46 @@ def create_ui():
                     default_prov = provider_choices[0][1] if provider_choices else "custom"
                     default_cfg = full_config.get(default_prov, {})
                     
-                    with gr.Row():
-                        provider_dd = gr.Dropdown(
-                            label="模型提供商", 
-                            choices=provider_choices, 
-                            value=default_prov,
-                            scale=1
-                        )
+                    # 模型提供商选择
+                    provider_dd = gr.Dropdown(
+                        label="模型提供商", 
+                        choices=provider_choices, 
+                        value=default_prov
+                    )
                     
-                    with gr.Row():
-                        base_url_input = gr.Textbox(
-                            label="Base URL", 
-                            value=default_cfg.get("api_base", ""),
-                            interactive=True,
-                            scale=2
-                        )
-                        model_name_input = gr.Textbox(
-                            label="模型名称",
-                            value=default_cfg.get("default_model", ""),
-                            interactive=(default_prov == "custom"),
-                            scale=1
-                        )
+                    # Base URL 单独一行
+                    base_url_input = gr.Textbox(
+                        label="Base URL", 
+                        value=default_cfg.get("api_base", ""),
+                        interactive=True,
+                        placeholder="例如: http://localhost:11434/v1"
+                    )
                     
+                    # API Key 单独一行
                     api_key_input = gr.Textbox(
                         label="API Key", 
                         type="password", 
                         value=default_cfg.get("api_key", ""),
-                        interactive=True
+                        interactive=True,
+                        placeholder="留空使用配置文件中的默认值"
+                    )
+                    
+                    # 模型名称 单独一行
+                    model_name_input = gr.Textbox(
+                        label="模型名称",
+                        value=default_cfg.get("default_model", ""),
+                        interactive=True,
+                        placeholder="例如: gelab-zero-4b-preview"
+                    )
+                    
+                    # 检查连接按钮和状态
+                    with gr.Row():
+                        check_model_btn = gr.Button("🔍 检查模型连接", size="sm")
+                    model_status = gr.Textbox(
+                        label="连接状态", 
+                        value="❓ 未检查",
+                        interactive=False,
+                        lines=2
                     )
                     
                     # Event: Provider Change
@@ -977,15 +1013,66 @@ def create_ui():
                         new_model = cfg.get("default_model", "")
                         
                         return (
-                            gr.update(value=new_base), 
-                            gr.update(value=new_key),
-                            gr.update(value=new_model, interactive=False)
+                            gr.update(value=new_base, interactive=True), 
+                            gr.update(value=new_key, interactive=True),
+                            gr.update(value=new_model, interactive=True)
                         )
 
                     provider_dd.change(
                         fn=on_provider_change,
                         inputs=[provider_dd],
                         outputs=[base_url_input, api_key_input, model_name_input]
+                    )
+                    
+                    # 检查模型连接
+                    def check_model_connection(base_url, model_name, api_key):
+                        """检查模型连接状态"""
+                        if not base_url:
+                            return "⚠️ 请先填写 Base URL"
+                        if not model_name:
+                            return "⚠️ 请先填写模型名称"
+                        
+                        import requests
+                        base = base_url.rstrip('/')
+                        headers = {"Content-Type": "application/json"}
+                        if api_key:
+                            headers["Authorization"] = f"Bearer {api_key}"
+                        
+                        # 判断是本地还是在线
+                        is_local = "localhost" in base or "127.0.0.1" in base or "0.0.0.0" in base
+                        api_type = "本地" if is_local else "在线"
+                        
+                        # 直接测试 /chat/completions 接口
+                        try:
+                            url = base + '/chat/completions'
+                            test_payload = {
+                                "model": model_name,
+                                "messages": [{"role": "user", "content": "test"}],
+                                "max_tokens": 1
+                            }
+                            response = requests.post(url, json=test_payload, headers=headers, timeout=15)
+                            
+                            if response.status_code == 200:
+                                return f"✅ 连接成功 ({api_type})\n📍 {base}\n🤖 {model_name}"
+                            elif response.status_code == 404:
+                                return f"❌ 模型 {model_name} 不存在"
+                            else:
+                                try:
+                                    err_msg = response.json().get('error', {}).get('message', response.text[:80])
+                                except:
+                                    err_msg = response.text[:80]
+                                return f"❌ 请求失败 ({response.status_code})\n{err_msg}"
+                        except requests.exceptions.ConnectionError:
+                            return f"❌ 无法连接 {base}"
+                        except requests.exceptions.Timeout:
+                            return f"❌ 连接超时"
+                        except Exception as e:
+                            return f"❌ {str(e)[:60]}"
+                    
+                    check_model_btn.click(
+                        fn=check_model_connection,
+                        inputs=[base_url_input, model_name_input, api_key_input],
+                        outputs=[model_status]
                     )
 
                     with gr.Row():
@@ -1082,21 +1169,51 @@ def create_ui():
         # 启动 scrcpy
         scrcpy_btn.click(fn=start_scrcpy, outputs=[scrcpy_status])
 
-        # 核心：智能提交（命令 或 回复）
+        # 核心：智能提交（命令 或 回复 或 暂停后继续）
         def smart_submit(prompt, provider, base_url, api_key, model_name, device):
+            # 情况1: 处于暂停状态 → 作为注入指令继续
+            if runner.is_paused:
+                paused_session = runner.get_paused_session_id()
+                if not paused_session:
+                    runner.clear_pause_state()
+                    return "⚠️ 没有可继续的会话", prompt
+                
+                script_path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "examples", "run_single_task.py")
+                cmd_list = [sys.executable, script_path, "--continue-session", paused_session]
+                
+                # 如果有注入指令
+                if prompt.strip():
+                    cmd_list.extend(["--injection", prompt.strip()])
+                
+                # 添加模型参数
+                if base_url: cmd_list.extend(["--base-url", base_url])
+                if model_name: cmd_list.extend(["--model", model_name])
+                if api_key: cmd_list.extend(["--api-key", api_key])
+                if device and device != "未找到设备":
+                    cmd_list.extend(["--device-id", device])
+                
+                env = os.environ.copy()
+                env["PYTHONIOENCODING"] = "utf-8"
+                env["PYTHONUNBUFFERED"] = "1"
+                
+                runner.clear_pause_state()
+                success, msg = runner.start(cmd_list, cwd=os.getcwd(), env=env)
+                return ("🟢 继续运行中" if success else f"🔴 {msg}"), ""
+            
+            # 情况2: 无输入时仅返回当前状态
             if not prompt.strip():
                 return runner.get_status(), ""
             
-            # 如果任务正在运行且等待输入，作为回复发送
+            # 情况3: 任务正在运行且等待输入，作为回复发送
             if runner.is_running and runner.is_waiting_for_input():
                 success, msg = runner.send_input(prompt.strip())
                 return runner.get_status(), ""  # 清空输入框
             
-            # 否则作为新任务启动
+            # 情况4: 任务运行中 → 提示先停止
             if runner.is_running:
-                return "⚠️ 任务运行中，请先停止", prompt
+                return "⚠️ 任务运行中，请先暂停或停止", prompt
             
-            # 从配置或输入获取参数
+            # 情况5: 空闲 → 启动新任务
             final_url = base_url
             final_model = model_name
             final_key = api_key
@@ -1129,32 +1246,29 @@ def create_ui():
             outputs=[task_status, user_input]
         )
 
-        # 停止任务
+        # 停止任务（完全停止，清除暂停状态）
         def stop_command():
             runner.stop()
+            runner.clear_pause_state()  # 确保清除暂停状态
             return "⚪ 已停止"
         
         stop_btn.click(stop_command, outputs=[task_status])
 
-        # 暂停任务并注入补充信息
-        # 暂停任务并注入补充信息
+        # 暂停任务：立即终止进程，保存session供后续继续
         def pause_and_inject(prompt_text):
-            """暂停当前任务"""
+            """暂停当前任务：立即终止进程，保存 session_id 供后续继续"""
             if not runner.is_running:
                 return "⚠️ 没有正在运行的任务"
             
-            # 写入暂停信号文件 - 使用绝对路径
-            pause_file = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "tmp_screenshot", "pause_signal.txt")
-            os.makedirs(os.path.dirname(pause_file), exist_ok=True)
-            try:
-                # 写入固定内容 "PAUSE" 表示暂停信号
-                with open(pause_file, 'w', encoding='utf-8') as f:
-                    f.write("PAUSE")
-                print(f"[DEBUG] 暂停信号已写入: {pause_file}")
-                return "⏸ 暂停信号已发送，任务将暂停并等待输入..."
-            except Exception as e:
-                print(f"[DEBUG] 暂停信号写入失败: {e}")
-                return f"❌ 暂停失败: {e}"
+            current_session = runner.get_current_session_id()
+            if not current_session:
+                return "⚠️ 无法获取当前会话ID，请稍后重试"
+            
+            # 直接终止进程，并保存 session_id
+            runner.stop(is_pause=True)
+            
+            print(f"[PAUSED] 任务已暂停，Session: {current_session}")
+            return f"⏸ 已暂停 (Session: {current_session[:8]}...) - 输入修正指令后点击 [执行/回复] 继续"
         
         pause_btn.click(pause_and_inject, inputs=[user_input], outputs=[task_status])
 

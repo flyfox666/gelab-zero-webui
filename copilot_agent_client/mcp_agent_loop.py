@@ -357,8 +357,15 @@ def gui_agent_loop(
         # assume when reply info is provided, it must be used for current step
         if reply_info is not None:
             print(f"Using reply from client: {reply_info}")
-            # 增强提示，确保LLM重视用户指令
-            payload['observation']['query'] = f"User Intervention: {reply_info}. Please prioritize this instruction."
+            # 增强提示，确保LLM优先执行用户干预指令，不要继续完成原任务
+            payload['observation']['query'] = f"""【紧急用户干预 - 最高优先级】
+用户要求：{reply_info}
+
+重要提示：
+1. 立即停止当前正在执行的任务
+2. 优先执行用户的新指令
+3. 不要输出 COMPLETE，除非新指令已完成
+4. 根据当前屏幕状态，执行用户的新要求"""
             reply_info = None  # reset after use
 
         server_return = agent_server.automate_step(payload)

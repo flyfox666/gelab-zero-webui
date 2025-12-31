@@ -71,18 +71,24 @@ if __name__ == "__main__":
     parser.add_argument("--model", type=str, default="gelab-zero-4b-preview", help="Model name.")
     parser.add_argument("--base-url", type=str, help="Base URL for the model API.")
     parser.add_argument("--api-key", type=str, help="API Key for the model.")
+    parser.add_argument("--continue-session", type=str, help="Continue an existing session by session ID.")
+    parser.add_argument("--injection", type=str, help="User injection command to modify task direction.")
     
     args = parser.parse_args()
 
-    if not args.task:
+    # 检查是否是继续模式
+    is_continue_mode = args.continue_session is not None
+    
+    if not args.task and not is_continue_mode:
         print("❌ 错误：未传入任务参数！")
         print("📝 使用方法：")
         print(f"   python {sys.argv[0]} \"你的任务描述\" [options]")
         print("   示例1：python script.py \"去淘宝帮我买本书\"")
         print("   示例2：python script.py \"打开微信，给柏茗发helloworld\" --device-id 123456")
+        print(f"   示例3：python script.py --continue-session <session_id> --injection \"修正指令\"")
         sys.exit(1)
 
-    task = args.task
+    task = args.task  # May be None in continue mode
 
     # Use provided device_id or find the first available one
     if args.device_id:
@@ -146,25 +152,46 @@ if __name__ == "__main__":
     # 执行任务并计总时间
     total_start = time.time()
     
-    print(f"Starting task: {task}")
-    print(f"Device: {device_id}")
-    print(f"Model: {tmp_rollout_config['model_config']['model_name']}")
-    
     # 使用 gui_agent_loop 支持暂停/继续
     from copilot_agent_client.mcp_agent_loop import gui_agent_loop, clear_pause_signal
     
     # 清除可能存在的旧暂停信号
     clear_pause_signal()
     
-    # 首次执行任务
-    result = gui_agent_loop(
-        agent_server=l2_server,
-        agent_loop_config=tmp_rollout_config,
-        device_id=device_id,
-        max_steps=tmp_rollout_config.get('max_steps', 400),
-        reply_mode="pass_to_client",  # 支持暂停
-        task=task,
-    )
+    if is_continue_mode:
+        # 继续已有 session
+        continue_session_id = args.continue_session
+        injection_text = args.injection or ""
+        
+        print(f"[CONTINUE] 继续 Session: {continue_session_id}")
+        if injection_text:
+            print(f"[INJECTION] 用户注入指令: {injection_text}")
+        print(f"Device: {device_id}")
+        print(f"Model: {tmp_rollout_config['model_config']['model_name']}")
+        
+        result = gui_agent_loop(
+            agent_server=l2_server,
+            agent_loop_config=tmp_rollout_config,
+            device_id=device_id,
+            max_steps=tmp_rollout_config.get('max_steps', 400),
+            reply_mode="pass_to_client",
+            session_id=continue_session_id,
+            reply_from_client=injection_text if injection_text else None,
+        )
+    else:
+        # 新任务
+        print(f"Starting task: {task}")
+        print(f"Device: {device_id}")
+        print(f"Model: {tmp_rollout_config['model_config']['model_name']}")
+        
+        result = gui_agent_loop(
+            agent_server=l2_server,
+            agent_loop_config=tmp_rollout_config,
+            device_id=device_id,
+            max_steps=tmp_rollout_config.get('max_steps', 400),
+            reply_mode="pass_to_client",
+            task=task,
+        )
     
     # 暂停/继续循环
     total_steps = result.get('global_step_idx', 0)
@@ -212,7 +239,11 @@ if __name__ == "__main__":
         print(f"\n[INFO] Agent 询问: {info_action.get('value', '未知问题')}")
         print("请在 Web UI 中回复或输入回复内容:")
         
-        reply_info = input("Your reply: ")
+        # 确保 WAITING_FOR_INPUT 被刷新输出，让 Web UI 能检测到
+        print("WAITING_FOR_INPUT", flush=True)
+        import sys
+        sys.stdout.flush()
+        reply_info = input("")
         
         remaining_steps = tmp_rollout_config.get('max_steps', 400) - total_steps
         if remaining_steps <= 0:

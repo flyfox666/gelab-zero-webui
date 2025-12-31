@@ -14,7 +14,7 @@ package_name_map = {
     "网易有道词典": "com.youdao.dict",
     "百度贴吧": "com.baidu.tieba",
     "腾讯新闻": "com.tencent.news",
-    "饿了么": "me.ele",
+    "淘宝闪购": "me.ele",
     "百度输入法": "com.baidu.input",
     "优酷视频": "com.youku.phone",
     "抖音": "com.ss.android.ugc.aweme",
