@@ -159,6 +159,167 @@ def get_available_sessions():
     sessions.sort(key=lambda x: x[1], reverse=True)
     return [s[0] for s in sessions[:20]]  # 只返回最近20个
 
+
+def export_trajectory_to_pdf(session_id, output_path=None):
+    """
+    将轨迹导出为 PDF 文件
+    
+    Args:
+        session_id: Session ID
+        output_path: 输出文件路径，默认为 traces 目录下
+    
+    Returns:
+        生成的 PDF 文件路径，失败返回 None
+    """
+    try:
+        from reportlab.lib.pagesizes import A4
+        from reportlab.lib.units import mm
+        from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Image as RLImage
+        from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+        from reportlab.pdfbase import pdfmetrics
+        from reportlab.pdfbase.ttfonts import TTFont
+    except ImportError:
+        print("[ERROR] 需要安装 reportlab: pip install reportlab")
+        return None
+    
+    # 加载日志
+    logs = load_session_logs(session_id)
+    if not logs:
+        print(f"[ERROR] 没有找到日志: {session_id}")
+        return None
+    
+    # 输出路径
+    traces_dir = "running_log/server_log/os-copilot-local-eval-logs/traces"
+    if output_path is None:
+        output_path = os.path.join(traces_dir, f"{session_id}.pdf")
+    
+    # 确保目录存在
+    os.makedirs(os.path.dirname(output_path), exist_ok=True)
+    
+    # 尝试注册中文字体
+    try:
+        font_paths = [
+            "C:/Windows/Fonts/msyh.ttc",
+            "C:/Windows/Fonts/simsun.ttc",
+            "C:/Windows/Fonts/simhei.ttf",
+        ]
+        font_registered = False
+        for fp in font_paths:
+            if os.path.exists(fp):
+                pdfmetrics.registerFont(TTFont('ChineseFont', fp))
+                font_registered = True
+                break
+    except Exception as e:
+        print(f"[WARNING] 注册中文字体失败: {e}")
+        font_registered = False
+    
+    # 创建 PDF
+    doc = SimpleDocTemplate(
+        output_path,
+        pagesize=A4,
+        rightMargin=20*mm,
+        leftMargin=20*mm,
+        topMargin=20*mm,
+        bottomMargin=20*mm
+    )
+    
+    # 样式
+    styles = getSampleStyleSheet()
+    if font_registered:
+        title_style = ParagraphStyle(
+            'ChineseTitle',
+            parent=styles['Heading1'],
+            fontName='ChineseFont',
+            fontSize=18,
+            spaceAfter=12
+        )
+        body_style = ParagraphStyle(
+            'ChineseBody',
+            parent=styles['Normal'],
+            fontName='ChineseFont',
+            fontSize=10,
+            leading=14
+        )
+    else:
+        title_style = styles['Heading1']
+        body_style = styles['Normal']
+    
+    # 构建内容
+    story = []
+    
+    # 标题
+    config_log = logs[0]
+    task = config_log.get('message', {}).get('task', session_id)
+    story.append(Paragraph(f"任务轨迹: {task[:50]}", title_style))
+    story.append(Spacer(1, 10*mm))
+    
+    # 后续是环境-动作对
+    env_act_logs = logs[1:]
+    for idx, log in enumerate(env_act_logs):
+        try:
+            env = log.get('message', {}).get('environment', {})
+            act = log.get('message', {}).get('action', {})
+            
+            thought = act.get('cot', '')
+            action_type = act.get('action_type', '')
+            image_url = env.get('image', '')
+            
+            # 步骤标题
+            story.append(Paragraph(f"<b>Step {idx + 1}</b>", body_style))
+            story.append(Spacer(1, 2*mm))
+            
+            # 思考
+            if thought:
+                thought_short = thought[:200] + "..." if len(thought) > 200 else thought
+                story.append(Paragraph(f"<i>思考:</i> {thought_short}", body_style))
+            
+            # 动作
+            story.append(Paragraph(f"<b>动作:</b> {action_type}", body_style))
+            
+            # 截图
+            if image_url and HAS_MEGFILE:
+                try:
+                    processed_url = image_url.replace(".jpeg", "_processed.jpeg")
+                    target_url = processed_url if smart_exists(processed_url) else image_url
+                    
+                    with smart_open(target_url, "rb") as f:
+                        pil_img = Image.open(f)
+                        img_w, img_h = pil_img.size
+                        
+                        # 保存临时文件
+                        temp_img_path = os.path.join(traces_dir, f"temp_{session_id}_{idx}.jpg")
+                        pil_img = long_side_resize(pil_img, 600)
+                        pil_img.save(temp_img_path, "JPEG", quality=80)
+                        
+                        # 添加到 PDF
+                        img_w, img_h = pil_img.size
+                        max_width = 160 * mm
+                        max_height = 200 * mm
+                        scale = min(max_width / img_w, max_height / img_h, 1.0)
+                        
+                        rl_img = RLImage(temp_img_path, width=img_w * scale, height=img_h * scale)
+                        story.append(Spacer(1, 3*mm))
+                        story.append(rl_img)
+                except Exception as e:
+                    print(f"[WARNING] 加载图片失败: {e}")
+            
+            story.append(Spacer(1, 8*mm))
+            story.append(Paragraph("<hr/>", body_style))
+            story.append(Spacer(1, 5*mm))
+            
+        except Exception as e:
+            print(f"[WARNING] 处理步骤 {idx+1} 失败: {e}")
+            continue
+    
+    # 生成 PDF
+    try:
+        doc.build(story)
+        print(f"[PDF] 导出成功: {output_path}")
+        return output_path
+    except Exception as e:
+        print(f"[ERROR] PDF 生成失败: {e}")
+        return None
+
 # --- 全局命令执行管理器 ---
 class CommandRunner:
     def __init__(self):
@@ -665,6 +826,19 @@ def create_ui():
                 }
             }
         });
+        
+        // PDF 自动下载触发
+        var lastPdfLink = null;
+        setInterval(function() {
+            var fileComponents = document.querySelectorAll('[data-testid="file"] a[download], .file-preview a[download], [class*="file"] a[href*=".pdf"]');
+            fileComponents.forEach(function(link) {
+                if (link.href && link.href.includes('.pdf') && link.href !== lastPdfLink) {
+                    lastPdfLink = link.href;
+                    console.log('[AutoGLM] Auto-downloading PDF:', link.href);
+                    link.click();
+                }
+            });
+        }, 500);
     })();
     </script>
     """
@@ -834,10 +1008,13 @@ def create_ui():
                         gr.Markdown("### 📱 任务轨迹")
                         trajectory_output = gr.Chatbot(
                             label="轨迹回放",
-                            height=700,
+                            height=660,
                             show_label=False,
                             elem_classes=["trajectory-chatbot"]
                         )
+                        with gr.Row():
+                            export_pdf_btn = gr.Button("📄 导出 PDF", size="sm")
+                            export_file = gr.File(label="下载", visible=False)
                     
                     # 右边：实时日志
                     with gr.Column(scale=1):
@@ -886,6 +1063,18 @@ def create_ui():
             return messages
         
         # session_dropdown.change 事件在下方统一处理，避免重复绑定
+
+        # PDF 导出
+        def export_pdf_handler(session_id):
+            if not session_id:
+                return gr.update(value=None, visible=False)
+            pdf_path = export_trajectory_to_pdf(session_id)
+            if pdf_path:
+                return gr.update(value=pdf_path, visible=True)
+            else:
+                return gr.update(value=None, visible=False)
+        
+        export_pdf_btn.click(export_pdf_handler, inputs=[session_dropdown], outputs=[export_file])
 
         # 列出应用
         list_apps_btn.click(get_available_apps, outputs=app_list_output)
