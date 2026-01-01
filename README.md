@@ -36,7 +36,7 @@ Launch: `python start_web_ui.py`, then visit `http://localhost:8866`
 | **📊 Task Monitoring** | View task status, ⏸️ **Pause/Inject/Resume**, select historical Sessions |
 | **💬 Command/Reply** | Enter task instructions or reply to Agent, supports `Ctrl+Enter` |
 | **⚙️ Model Configuration** | Select model provider, 🔍 **Check model connection**, configure API |
-| **🛠 Utilities** | Launch scrcpy, get app list, 📄 **Export PDF trajectory** |
+| **🛠 Utilities** | Launch scrcpy, get app list, 📄 **Export PDF trajectory**, 📦 **Scan App Mapping** |
 
 **Right Panel - Display**
 
@@ -92,6 +92,43 @@ stepfun:
 - **Three-line Configuration**: Base URL, API Key, Model Name on separate rows for easier input
 - **Improved Status Display**: Clearer task status feedback (Ready/Running/Waiting/Paused)
 - **Reply Interaction Fix**: Properly detects waiting for input state when Agent asks questions
+
+### 📦 App Mapping Scanner
+
+Automatically scan installed apps on the device and build a **Chinese app name → package name** mapping, enabling the AWAKE feature to recognize more apps.
+
+**File Structure:**
+
+```
+Project Root/
+├── default_package_map.yaml      # Default mapping library (160+ entries)
+├── user_package_map.yaml         # User mappings (scan results + custom)
+├── user_package_map.yaml.example # Template file
+└── aapt2-8.5.0-11315950-windows/ # aapt2 tool (Windows)
+```
+
+**Features:**
+
+- **Real-time Loading**: Changes to YAML files take effect immediately, no restart needed
+- **Smart Scanning**: Prioritizes mapping table (instant), auto-parses unknown apps with aapt2
+- **Priority**: `user_package_map.yaml` > `default_package_map.yaml`
+
+**Usage:**
+
+1. Click "🔍 Scan App Mapping" in Web UI
+2. Scan results auto-save to `user_package_map.yaml`
+3. Manually edit/add mappings in "📝 App Mapping Editor"
+
+**⏱️ Scan Time Reference:**
+
+| Match Type | Time per App | Description |
+|-----------|-------------|-------------|
+| Mapping Match | <1 sec | Quick lookup from 160+ mappings |
+| Deep Parse | 5-15 sec | Pull APK and parse with aapt2 |
+
+> ⚠️ **Note**: If you have many apps installed (e.g., 300+) and most are not in the default mapping, deep scanning may take **20-40 minutes**. Consider manually editing `default_package_map.yaml` first.
+
+> 💡 Project includes `aapt2` tool with auto-adaptive paths, no extra configuration needed
 
 ---
 

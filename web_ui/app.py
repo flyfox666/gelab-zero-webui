@@ -1086,6 +1086,29 @@ def create_ui():
                     
                     list_apps_btn = gr.Button("📲 获取应用列表", size="sm")
                     app_list_output = gr.Textbox(label="应用列表", lines=3, interactive=False)
+                    
+                    # 应用映射扫描功能
+                    gr.Markdown("---")
+                    gr.Markdown("#### 📦 应用映射管理")
+                    with gr.Row():
+                        scan_apps_btn = gr.Button("🔍 扫描应用映射", variant="primary", size="sm")
+                        edit_mapping_btn = gr.Button("✏️ 编辑映射表", size="sm")
+                    scan_status = gr.Textbox(label="扫描状态", interactive=False, lines=2)
+                    
+                    # 映射编辑侧栏（可折叠）
+                    with gr.Accordion("📝 应用映射编辑器", open=False) as mapping_editor:
+                        mapping_textbox = gr.Textbox(
+                            label="应用名称 -> 包名映射 (YAML格式)",
+                            lines=12,
+                            placeholder="微信: com.tencent.mm\n抖音: com.ss.android.ugc.aweme\n# 注释行以 # 开头",
+                            interactive=True
+                        )
+                        with gr.Row():
+                            load_mapping_btn = gr.Button("📥 加载", size="sm")
+                            save_mapping_btn = gr.Button("💾 保存", size="sm", variant="primary")
+                            refresh_mapping_btn = gr.Button("🔄 刷新", size="sm")
+                        mapping_status = gr.Textbox(label="操作状态", lines=1, interactive=False)
+
 
             # --- 右列：日志与轨迹并排（更大空间） ---
             with gr.Column(scale=3, min_width=700):
@@ -1168,6 +1191,86 @@ def create_ui():
 
         # 启动 scrcpy
         scrcpy_btn.click(fn=start_scrcpy, outputs=[scrcpy_status])
+
+        # === 应用映射扫描功能 ===
+        def scan_apps_to_mapping():
+            """扫描应用并更新映射"""
+            try:
+                from copilot_front_end.package_scanner import scan_device_apps, merge_scan_result
+                
+                # 获取已连接设备
+                result = subprocess.run(["adb", "devices"], capture_output=True, text=True, timeout=5)
+                device_lines = [l for l in result.stdout.split('\n')[1:] if '\tdevice' in l]
+                if not device_lines:
+                    return "❌ 没有检测到已连接的设备"
+                
+                device_id = device_lines[0].split('\t')[0]
+                
+                # 扫描应用
+                new_apps = scan_device_apps(device_id)
+                if not new_apps:
+                    return "⚠️ 未发现任何第三方应用"
+                
+                # 合并到用户映射
+                merged = merge_scan_result(new_apps)
+                return f"✅ 扫描完成！\n发现 {len(new_apps)} 个应用\n合并后共 {len(merged)} 条映射"
+            except Exception as e:
+                return f"❌ 扫描失败: {str(e)[:100]}"
+        
+        scan_apps_btn.click(fn=scan_apps_to_mapping, outputs=[scan_status])
+        
+        def load_mapping_yaml():
+            """加载 YAML 映射到编辑器"""
+            try:
+                from copilot_front_end.package_scanner import load_user_package_map, get_user_package_map_path
+                mapping = load_user_package_map()
+                if not mapping:
+                    return "# 映射表为空，请先扫描或手动添加\n# 格式: 应用名称: 包名", f"ℹ️ 映射文件: {get_user_package_map_path()}"
+                
+                # 转为 YAML 格式字符串
+                lines = ["# 用户自定义应用映射（可编辑）", ""]
+                for name, pkg in sorted(mapping.items()):
+                    lines.append(f"{name}: {pkg}")
+                return "\n".join(lines), f"✅ 已加载 {len(mapping)} 条映射"
+            except Exception as e:
+                return f"# 加载失败: {e}", f"❌ {str(e)[:50]}"
+        
+        load_mapping_btn.click(fn=load_mapping_yaml, outputs=[mapping_textbox, mapping_status])
+        refresh_mapping_btn.click(fn=load_mapping_yaml, outputs=[mapping_textbox, mapping_status])
+        
+        def save_mapping_yaml(yaml_content):
+            """保存编辑器内容到 YAML"""
+            try:
+                from copilot_front_end.package_scanner import save_user_package_map
+                
+                # 解析 YAML 内容
+                mapping = {}
+                for line in yaml_content.strip().split('\n'):
+                    line = line.strip()
+                    if not line or line.startswith('#'):
+                        continue
+                    if ':' in line:
+                        parts = line.split(':', 1)
+                        key = parts[0].strip().strip('"').strip("'")
+                        value = parts[1].strip().strip('"').strip("'")
+                        if key and value:
+                            mapping[key] = value
+                
+                if not mapping:
+                    return "⚠️ 没有有效的映射条目"
+                
+                success = save_user_package_map(mapping)
+                if success:
+                    return f"✅ 已保存 {len(mapping)} 条映射"
+                else:
+                    return "❌ 保存失败"
+            except Exception as e:
+                return f"❌ 保存失败: {str(e)[:50]}"
+        
+        save_mapping_btn.click(fn=save_mapping_yaml, inputs=[mapping_textbox], outputs=[mapping_status])
+        
+        # 点击编辑映射时自动加载
+        edit_mapping_btn.click(fn=load_mapping_yaml, outputs=[mapping_textbox, mapping_status])
 
         # 核心：智能提交（命令 或 回复 或 暂停后继续）
         def smart_submit(prompt, provider, base_url, api_key, model_name, device):
