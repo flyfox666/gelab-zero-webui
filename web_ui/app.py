@@ -1087,27 +1087,79 @@ def create_ui():
                     list_apps_btn = gr.Button("📲 获取应用列表", size="sm")
                     app_list_output = gr.Textbox(label="应用列表", lines=3, interactive=False)
                     
-                    # 应用映射扫描功能
+                    # 应用映射扫描功能 (增强版)
                     gr.Markdown("---")
                     gr.Markdown("#### 📦 应用映射管理")
+                    
                     with gr.Row():
-                        scan_apps_btn = gr.Button("🔍 扫描应用映射", variant="primary", size="sm")
-                        edit_mapping_btn = gr.Button("✏️ 编辑映射表", size="sm")
+                        scan_apps_btn = gr.Button("🔍 扫描应用", variant="primary", size="sm")
+                        deep_scan_chk = gr.Checkbox(label="深度扫描", value=True, scale=0)
                     scan_status = gr.Textbox(label="扫描状态", interactive=False, lines=2)
                     
-                    # 映射编辑侧栏（可折叠）
+                    # 增强版映射编辑器
                     with gr.Accordion("📝 应用映射编辑器", open=False) as mapping_editor:
-                        mapping_textbox = gr.Textbox(
-                            label="应用名称 -> 包名映射 (YAML格式)",
-                            lines=12,
-                            placeholder="微信: com.tencent.mm\n抖音: com.ss.android.ugc.aweme\n# 注释行以 # 开头",
-                            interactive=True
-                        )
-                        with gr.Row():
-                            load_mapping_btn = gr.Button("📥 加载", size="sm")
-                            save_mapping_btn = gr.Button("💾 保存", size="sm", variant="primary")
-                            refresh_mapping_btn = gr.Button("🔄 刷新", size="sm")
-                        mapping_status = gr.Textbox(label="操作状态", lines=1, interactive=False)
+                        with gr.Tabs():
+                            # Tab 1: 映射表预览
+                            with gr.TabItem("📋 映射表"):
+                                with gr.Row():
+                                    refresh_df_btn = gr.Button("🔄 刷新", size="sm")
+                                    stats_btn = gr.Button("📊 统计", size="sm")
+                                mapping_df = gr.Dataframe(
+                                    label="应用名称 -> 包名映射",
+                                    headers=["应用名", "包名"],
+                                    datatype=["str", "str"],
+                                    interactive=False,
+                                    row_count=(10, "dynamic")
+                                )
+                                mapping_stats_txt = gr.Textbox(
+                                    label="统计信息",
+                                    value="",
+                                    interactive=False,
+                                    lines=2
+                                )
+                            
+                            # Tab 2: 包名搜索
+                            with gr.TabItem("🔎 搜索"):
+                                search_input = gr.Textbox(
+                                    label="应用名称",
+                                    placeholder="输入应用名 (如: 微信)",
+                                    lines=1
+                                )
+                                search_btn = gr.Button("🔎 查找包名", size="sm")
+                                search_result = gr.Textbox(
+                                    label="查找结果",
+                                    lines=4,
+                                    interactive=False
+                                )
+                            
+                            # Tab 3: YAML 编辑器
+                            with gr.TabItem("✏️ 编辑"):
+                                mapping_textbox = gr.Textbox(
+                                    label="应用名称 -> 包名映射 (YAML格式)",
+                                    lines=10,
+                                    placeholder="微信: com.tencent.mm\n抖音: com.ss.android.ugc.aweme\n# 注释行以 # 开头",
+                                    interactive=True
+                                )
+                                with gr.Row():
+                                    load_mapping_btn = gr.Button("📥 加载", size="sm")
+                                    save_mapping_btn = gr.Button("💾 保存", size="sm", variant="primary")
+                                    refresh_mapping_btn = gr.Button("🔄 刷新", size="sm")
+                                mapping_status = gr.Textbox(label="操作状态", lines=1, interactive=False)
+                            
+                            # Tab 4: 批量导入
+                            with gr.TabItem("📥 批量导入"):
+                                gr.Markdown("**格式**: 应用名:包名 (一行一个)")
+                                import_text = gr.Textbox(
+                                    label="批量导入",
+                                    placeholder="微信:com.tencent.mm\n抖音:com.ss.android.ugc.aweme",
+                                    lines=6
+                                )
+                                import_btn = gr.Button("📥 导入", size="sm", variant="primary")
+                                import_result = gr.Textbox(
+                                    label="导入结果",
+                                    lines=3,
+                                    interactive=False
+                                )
 
 
             # --- 右列：日志与轨迹并排（更大空间） ---
@@ -1192,12 +1244,21 @@ def create_ui():
         # 启动 scrcpy
         scrcpy_btn.click(fn=start_scrcpy, outputs=[scrcpy_status])
 
-        # === 应用映射扫描功能 ===
-        def scan_apps_to_mapping():
+        # === 应用映射扫描功能 (增强版) ===
+        # 导入增强的 package_map_ui 功能
+        from web_ui.package_map_ui import (
+            scan_apps_with_progress,
+            get_package_mapping_dataframe,
+            search_package_by_name,
+            batch_import_mappings,
+            get_mapping_statistics,
+            load_user_mapping_yaml,
+            save_user_mapping_yaml
+        )
+        
+        def scan_apps_to_mapping(deep_scan):
             """扫描应用并更新映射"""
             try:
-                from copilot_front_end.package_scanner import scan_device_apps, merge_scan_result
-                
                 # 获取已连接设备
                 result = subprocess.run(["adb", "devices"], capture_output=True, text=True, timeout=5)
                 device_lines = [l for l in result.stdout.split('\n')[1:] if '\tdevice' in l]
@@ -1206,19 +1267,41 @@ def create_ui():
                 
                 device_id = device_lines[0].split('\t')[0]
                 
-                # 扫描应用
-                new_apps = scan_device_apps(device_id)
-                if not new_apps:
-                    return "⚠️ 未发现任何第三方应用"
-                
-                # 合并到用户映射
-                merged = merge_scan_result(new_apps)
-                return f"✅ 扫描完成！\n发现 {len(new_apps)} 个应用\n合并后共 {len(merged)} 条映射"
+                # 使用增强版扫描
+                logs, status, count = scan_apps_with_progress(
+                    device_id=device_id,
+                    deep_scan=deep_scan
+                )
+                return status
             except Exception as e:
                 return f"❌ 扫描失败: {str(e)[:100]}"
         
-        scan_apps_btn.click(fn=scan_apps_to_mapping, outputs=[scan_status])
+        scan_apps_btn.click(fn=scan_apps_to_mapping, inputs=[deep_scan_chk], outputs=[scan_status])
         
+        # DataFrame 刷新
+        refresh_df_btn.click(
+            fn=lambda: get_package_mapping_dataframe(),
+            outputs=[mapping_df]
+        )
+        
+        # 统计信息
+        def get_stats_text():
+            stats = get_mapping_statistics()
+            return (
+                f"默认映射: {stats['default_count']} 条\n"
+                f"用户映射: {stats['user_count']} 条 (独有: {stats['user_only_count']})"
+            )
+        
+        stats_btn.click(fn=get_stats_text, outputs=[mapping_stats_txt])
+        
+        # 包名搜索
+        search_btn.click(
+            fn=search_package_by_name,
+            inputs=[search_input],
+            outputs=[search_result]
+        )
+        
+        # YAML 编辑器事件
         def load_mapping_yaml():
             """加载 YAML 映射到编辑器"""
             try:
@@ -1269,8 +1352,12 @@ def create_ui():
         
         save_mapping_btn.click(fn=save_mapping_yaml, inputs=[mapping_textbox], outputs=[mapping_status])
         
-        # 点击编辑映射时自动加载
-        edit_mapping_btn.click(fn=load_mapping_yaml, outputs=[mapping_textbox, mapping_status])
+        # 批量导入
+        import_btn.click(
+            fn=batch_import_mappings,
+            inputs=[import_text],
+            outputs=[import_result]
+        )
 
         # 核心：智能提交（命令 或 回复 或 暂停后继续）
         def smart_submit(prompt, provider, base_url, api_key, model_name, device):
