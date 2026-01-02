@@ -872,7 +872,7 @@ def create_ui():
 
         with gr.Row():
             # --- 左列：设备管理、配置、任务监控 ---
-            with gr.Column(scale=1, min_width=350):
+            with gr.Column(scale=1, min_width=400):
                 
                 # 1. 设备管理
                 with gr.Group():
@@ -1100,7 +1100,7 @@ def create_ui():
                     with gr.Accordion("📝 应用映射编辑器", open=False) as mapping_editor:
                         with gr.Tabs():
                             # Tab 1: 映射表预览
-                            with gr.TabItem("📋 映射表"):
+                            with gr.TabItem("📋 列表"):
                                 with gr.Row():
                                     refresh_df_btn = gr.Button("🔄 刷新", size="sm")
                                     stats_btn = gr.Button("📊 统计", size="sm")
@@ -1147,7 +1147,7 @@ def create_ui():
                                 mapping_status = gr.Textbox(label="操作状态", lines=1, interactive=False)
                             
                             # Tab 4: 批量导入
-                            with gr.TabItem("📥 批量导入"):
+                            with gr.TabItem("📥 导入"):
                                 gr.Markdown("**格式**: 应用名:包名 (一行一个)")
                                 import_text = gr.Textbox(
                                     label="批量导入",
