@@ -38,6 +38,8 @@ Launch: `python start_web_ui.py`, then visit `http://localhost:8866`
 | **⚙️ Model Configuration** | Select model provider, 🔍 **Check model connection**, configure API |
 | **🛠 Utilities** | Launch scrcpy, get app list, 📄 **Export PDF trajectory**, 📦 **Scan App Mapping** |
 
+> ⚠️ **Important**: For new phones or after re-enabling developer mode, you must first connect via USB cable at least once. This initial USB connection authorizes the computer for ADB access. Once authorized, you can use wireless debugging without USB connection going forward.
+
 **Right Panel - Display**
 
 | Module | Features |
