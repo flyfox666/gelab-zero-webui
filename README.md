@@ -690,10 +690,6 @@ If you find GELab-Zero useful for your research, please consider citing our work
 
 ```
 
-## ⭐ Star History
+## Star History
 
-<div align="center">
-  <a href="https://star-history.com/#stepfun-ai/gelab-zero&Date">
-    <img src="https://api.star-history.com/svg?repos=stepfun-ai/gelab-zero&type=Date" alt="Star History Chart" width="600">
-  </a>
-</div>
+[![Star History Chart](https://api.star-history.com/svg?repos=flyfox666/gelab-zero-webui&type=date&legend=top-left)](https://www.star-history.com/#flyfox666/gelab-zero-webui&type=date&legend=top-left)
